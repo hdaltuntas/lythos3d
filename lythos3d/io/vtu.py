@@ -106,3 +106,41 @@ def write_result(path: str | os.PathLike, result) -> str:
             "mean_stress": result.stress.reshape(mesh.n_elements, 4, 6)[:, :, :3].mean(axis=(1, 2)),
         },
     )
+
+
+def write_stage(path: str | os.PathLike, problem, result) -> str:
+    """Write one :class:`~lythos3d.core.solver.StageResult` for ParaView.
+
+    Only the elements present at that stage are written, so excavated ground
+    is simply absent.  ``plastic_strain`` (equivalent plastic strain, mean per
+    element) is what shows a failure mechanism: after a strength reduction it
+    traces the slip surface.
+    """
+    mesh = problem.mesh
+    ce = problem.continuum
+    ngp = ce.n_gauss
+    active = np.asarray(result.active, dtype=bool)
+    nodal_stress = ce.nodal_average(np.where(np.repeat(active, ngp)[:, None], result.state.stress, 0.0),
+                                    mesh.n_nodes)
+    # average only over the active elements that touch each node
+    count = np.zeros(mesh.n_nodes)
+    np.add.at(count, mesh.elements[active].ravel(), 1.0)
+    total = np.zeros(mesh.n_nodes)
+    np.add.at(total, mesh.elements.ravel(), 1.0)
+    nodal_stress *= (total / np.maximum(count, 1.0))[:, None]
+
+    def per_element(values):
+        return values.reshape(mesh.n_elements, ngp).mean(axis=1)[active]
+
+    return write_vtu(
+        path, mesh.nodes, mesh.elements[active],
+        point_data={
+            "displacement": result.displacement,
+            "stress": nodal_stress,
+        },
+        cell_data={
+            "region": mesh.region[active],
+            "plastic_strain": per_element(result.state.eps_p_eq),
+            "plastic_fraction": per_element(result.state.yielding.astype(float)),
+        },
+    )

@@ -86,3 +86,81 @@ permutation of the axes. It is not symmetric under reflection, though,
 because every cell's diagonal runs the same way. A symmetric problem therefore
 gives an exactly symmetric answer under swapping `x` and `y`, but a mirror
 image differs by discretisation error.
+
+## Mohr-Coulomb in three dimensions
+
+The constitutive update is the one 2D Lythos uses: an exact return mapping
+in principal stress space (Clausen, Damkilde & Andersen, 2006). With the
+principal stresses sorted `s1 ≥ s2 ≥ s3`, the Mohr-Coulomb pyramid and the
+tension cut-off are planes. For any set of active planes the return is a small
+linear system, and its tangent follows in closed form. The active set is
+found by trying the candidates in turn: the main face, an edge, the cut-off,
+their intersections, the apex. None of this depends on the number of
+dimensions, and the code is carried over unchanged.
+
+What 3D changes is the way into and out of principal space.
+
+**Principal values.** The 2D code rotated in the plane. In 3D the stress is
+a symmetric 3 × 3 tensor with an eigenproblem at every Gauss point, and the
+eigenvectors are needed only where the point yields. Every point is
+therefore screened first with principal values in closed form (the
+trigonometric solution of the characteristic cubic), and `eigh` is called
+only for points at or beyond the surface.
+
+**Tangent.** The principal-space tangent `Dp` (3 × 3) is rotated into global
+axes as `D = T D̃ Tᵀ`. Here `T` is the Voigt transformation built from the
+principal directions, and `D̃` is the 6 × 6 principal-frame stiffness: `Dp` in
+the normal block, and for each pair of principal axes `(a, b)` the shear
+stiffness
+
+    G_ab = μ (s_a − s_b) / (s_a^trial − s_b^trial)
+
+which comes from the rotation of the principal axes. For an elastic step it
+is the shear modulus `μ`. 2D has one such term; 3D has three. Leaving them
+out costs Newton its quadratic convergence wherever the soil yields.
+
+The tangent is verified against a finite-difference derivative of the
+stress update. On the faces and edges of the surface it agrees to round-off
+(`10⁻⁹ E`). `residual_stiffness` deliberately keeps a thousandth of `μ` where
+the exact value is zero (on an edge, `s_a = s_b` after the return), so that
+the global matrix stays invertible.
+
+With non-associated flow (`ψ < φ`) the tangent is unsymmetric, and it is used
+as it is. PARDISO factorises it by LU with `mtype = 1`, structurally
+symmetric: every finite element matrix has entry `(i, j)` exactly when it
+has `(j, i)`, whatever the values, which spares the weighted matching
+needed for a general unsymmetric matrix. While no point has yielded the
+tangent is symmetric positive definite, and Cholesky is used.
+
+## Staged construction and strength reduction
+
+The solver is the 2D one without the structural elements:
+
+- **Newton-Raphson** on the consistent tangent. Each load increment is
+  interpolated between the internal force at the start of the stage and the
+  external load, so an excavation's unloading is applied gradually rather
+  than all at once.
+- **Adaptive sub-stepping.** An increment that will not converge is halved,
+  and once a step size has failed the step never grows back to it.
+- **Backtracking line search.** The full step is evaluated together with its
+  tangent. It is accepted in most iterations, and then that evaluation is
+  exactly what the next iteration needs, so it is handed on rather than
+  repeated.
+- **Symbolic factorisation reused.** The sparsity pattern never changes
+  during an analysis. PARDISO's reordering (phase 11) therefore runs once,
+  and every later iteration only factorises and solves (phase 23). That is
+  2–3× faster per solve.
+- **Excavation** switches elements off. Nodes left with no active element
+  around them are held in place, so the system stays regular.
+- **K0 procedure.** `σv` comes from the stratum profile (`Model.overburden`),
+  not from integrating through the mesh. This is where borehole-defined
+  strata will plug in, and it stays exact however the mesh is graded.
+- **Strength reduction.** `c` and `tan φ` are divided by a trial factor, and
+  the factor is marched up until equilibrium is lost, then bisected. Each
+  trial starts from the last converged one. A trial that has taken eight
+  times the iterations of the hardest successful one is judged to have
+  failed. Tightening that budget, or the iteration limit per increment,
+  makes the search faster but declares trials failed that would have
+  converged: 20 iterations per increment instead of 40 moved the benchmark
+  slope from 1.423 to 1.402. The limits are therefore kept where the answer
+  no longer depends on them.

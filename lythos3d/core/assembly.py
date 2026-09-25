@@ -63,35 +63,104 @@ def default_backend() -> str:
     return "pardiso" if pypardiso is not None else "superlu"
 
 
-def solve(A: sp.spmatrix, b: np.ndarray, backend: str = "auto",
-          symmetric: bool = False) -> np.ndarray:
-    """Solve the sparse system ``A x = b``.
-
-    ``symmetric`` declares ``A`` symmetric positive definite, as an elastic
-    stiffness is.  PARDISO then factorises only its upper triangle by
-    Cholesky, in about half the time and memory.  The elasto-plastic tangent
-    with non-associated flow is unsymmetric and must not claim it.
-    """
+def _resolve_backend(backend: str) -> str:
     global _warned_fallback
     if backend not in BACKENDS:
         raise ValueError(f"unknown solver backend {backend!r}; choose from {BACKENDS}")
     if backend == "auto":
         if pypardiso is None and not _warned_fallback:
             warnings.warn("pypardiso is not installed; using SciPy's SuperLU, which is much "
-                          "slower on 3D models", RuntimeWarning, stacklevel=2)
+                          "slower on 3D models", RuntimeWarning, stacklevel=3)
             _warned_fallback = True
-        backend = default_backend()
-    if backend == "pardiso":
-        if pypardiso is None:
-            raise RuntimeError("the pardiso backend needs pypardiso: pip install pypardiso")
-        b = np.ascontiguousarray(b, dtype=float)
-        if symmetric:
-            solver = pypardiso.PyPardisoSolver(mtype=2)
-            x = solver.solve(sp.triu(A, format="csr"), b)
-            solver.free_memory(everything=True)
-            return x
-        return pypardiso.spsolve(sp.csr_matrix(A), b)
-    return spla.spsolve(sp.csc_matrix(A), b)
+        return default_backend()
+    if backend == "pardiso" and pypardiso is None:
+        raise RuntimeError("the pardiso backend needs pypardiso: pip install pypardiso")
+    return backend
+
+
+class _PardisoHandle:
+    """One PARDISO instance for a sequence of matrices sharing a sparsity structure.
+
+    PARDISO's symbolic analysis - the fill-reducing ordering - depends only on
+    where the non-zeros are, and in a Newton iteration they never move.  So
+    the analysis (phase 11) is run when the structure changes and every later
+    matrix is only factorised and solved (phase 23): two to three times faster
+    than analysing afresh each time, as ``pypardiso.spsolve`` does.
+    """
+
+    def __init__(self, mtype: int):
+        self.solver = pypardiso.PyPardisoSolver(mtype=mtype)
+        self._indptr = None
+        self._indices = None
+
+    def solve(self, A: sp.csr_matrix, b: np.ndarray) -> np.ndarray:
+        s = self.solver
+        s._check_A(A)
+        b = s._check_b(A, b)
+        same = (self._indptr is not None and len(self._indptr) == len(A.indptr)
+                and len(self._indices) == len(A.indices)
+                and np.array_equal(self._indptr, A.indptr) and np.array_equal(self._indices, A.indices))
+        if not same:
+            if self._indptr is not None:
+                s.free_memory(everything=True)
+            s.set_phase(11)
+            s._call_pardiso(A, b)
+            self._indptr, self._indices = A.indptr.copy(), A.indices.copy()
+        s.set_phase(23)
+        return s._call_pardiso(A, b)
+
+    def release(self) -> None:
+        if self._indptr is not None:
+            self.solver.free_memory(everything=True)
+            self._indptr = self._indices = None
+
+
+class LinearSolver:
+    """Solves a sequence of sparse systems, reusing what can be reused.
+
+    ``symmetric`` declares the matrix symmetric positive definite, as an
+    elastic stiffness is: PARDISO then factorises its upper triangle by
+    Cholesky, in about half the time and memory.  Otherwise
+    ``structurally_symmetric`` - true of every finite element matrix, whose
+    entry (i, j) exists exactly when (j, i) does, whatever the values - lets
+    PARDISO skip the matching step it needs for a general unsymmetric matrix.
+    """
+
+    def __init__(self, backend: str = "auto"):
+        self.backend = _resolve_backend(backend)
+        self._handles: dict[int, _PardisoHandle] = {}
+
+    def solve(self, A: sp.spmatrix, b: np.ndarray, symmetric: bool = False,
+              structurally_symmetric: bool = False) -> np.ndarray:
+        if self.backend == "superlu":
+            return spla.spsolve(sp.csc_matrix(A), b)
+        mtype = 2 if symmetric else (1 if structurally_symmetric else 11)
+        A = sp.triu(A, format="csr") if symmetric else sp.csr_matrix(A)
+        if mtype not in self._handles:
+            self._handles[mtype] = _PardisoHandle(mtype)
+        return self._handles[mtype].solve(A, np.ascontiguousarray(b, dtype=float))
+
+    def release(self) -> None:
+        """Free the factorisations PARDISO holds outside Python's memory."""
+        for handle in self._handles.values():
+            handle.release()
+        self._handles.clear()
+
+    def __del__(self):
+        try:
+            self.release()
+        except Exception:                                  # pragma: no cover - interpreter shutdown
+            pass
+
+
+def solve(A: sp.spmatrix, b: np.ndarray, backend: str = "auto",
+          symmetric: bool = False) -> np.ndarray:
+    """Solve one sparse system ``A x = b`` (see :class:`LinearSolver`)."""
+    solver = LinearSolver(backend)
+    try:
+        return solver.solve(A, b, symmetric)
+    finally:
+        solver.release()
 
 
 class SparsityPattern:
@@ -171,8 +240,13 @@ def assemble_vector(n_dof: int, dofs: np.ndarray, Fe: np.ndarray) -> np.ndarray:
 
 def solve_constrained(K: sp.csr_matrix, f: np.ndarray, fixed: np.ndarray,
                       prescribed: np.ndarray | None = None,
-                      backend: str = "auto", symmetric: bool = False) -> np.ndarray:
+                      backend: str = "auto", symmetric: bool = False,
+                      solver: LinearSolver | None = None) -> np.ndarray:
     """Solve ``K u = f`` with ``fixed`` dofs held at ``prescribed`` values.
+
+    ``K`` is a finite element matrix, structurally symmetric.  Pass a
+    ``solver`` to reuse its factorisation data across calls, as a Newton
+    iteration does.
 
     The restrained rows and columns are zeroed in place and given a unit
     diagonal (scaled to the matrix), rather than sliced out: slicing a sparse
@@ -208,7 +282,10 @@ def solve_constrained(K: sp.csr_matrix, f: np.ndarray, fixed: np.ndarray,
     K.data[diagonal & ~free[rows]] = scale
     rhs = np.array(f, dtype=float)
     rhs[~free] = scale * u[~free]
-    u = solve(K, rhs, backend, symmetric)
+    if solver is None:
+        u = solve(K, rhs, backend, symmetric)
+    else:
+        u = solver.solve(K, rhs, symmetric, structurally_symmetric=True)
     # A singular stiffness is rarely reported as such: round-off makes it
     # factorisable and the "solution" is a rigid body motion of 1e10 metres.
     # The residual gives it away, because such a system cannot balance the

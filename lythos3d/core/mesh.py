@@ -59,6 +59,20 @@ class Mesh:
         on = np.all(np.abs(self.nodes[faces][:, :, axis] - value) < tol, axis=1)
         return faces[on]
 
+    def mapped(self, transform) -> "Mesh":
+        """A copy with the corner nodes moved by ``transform`` (n, 3) -> (n, 3).
+
+        Mid-edge nodes are put back at the middle of their edges, so the
+        elements stay straight-sided.  This is how a structured block becomes
+        a slope or a tapered layer.
+        """
+        nodes = self.nodes.copy()
+        corners = np.unique(self.elements[:, :4])
+        nodes[corners] = transform(nodes[corners])
+        for k, (i, j) in enumerate(TET10_EDGES):
+            nodes[self.elements[:, 4 + k]] = 0.5 * (nodes[self.elements[:, i]] + nodes[self.elements[:, j]])
+        return Mesh(nodes, self.elements.copy(), self.region.copy())
+
     def assign_regions(self, classify) -> None:
         """Set ``region`` from a function of the element centroids (ne, 3) -> (ne,)."""
         self.region = np.asarray(classify(self.centroids()), dtype=np.int64)
