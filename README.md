@@ -47,7 +47,11 @@ whose failure is bounded at its ends. Lythos 3D is for those.
   Installed at a stage, stress-free in the ground as it has deformed.
   Reports membrane forces, moments and shears.
 - **Anchors and struts**: bars between two nodes or to a fixed point,
-  stressed to their lock-off load in the stage that installs them.
+  stressed to their lock-off load in the stage that installs them
+  (positive for an anchor, negative for a strut jacked against the wall).
+- **Walls drawn in plan** on a gmsh site: a polyline with a toe level,
+  reaching the ground or a given top. A wall may stop short of the base,
+  in which case it is embedded in the soil. Anchor ends become exact nodes.
 - **ParaView output** (`.vtu`): displacements, smoothed stresses and plastic
   strain on quadratic cells, stage by stage, with excavated ground left out.
 
@@ -63,7 +67,7 @@ lythos3d demo -o out             # a footing on sand over clay -> out/footing.vt
 lythos3d pit -o pit              # a square pit dug in two lifts, then its factor of safety (~6 min)
 lythos3d pit --trench -o trench  # the same section as a long trench, in plane strain (~1 min)
 
-lythos3d site-example -o site.json   # three boreholes, dipping layers, a pit in two lifts
+lythos3d site-example -o site.json   # boreholes, dipping layers, a walled and strutted pit
 lythos3d mesh site.json -o mesh.vtu  # mesh it; report element quality per soil and lift
 lythos3d run site.json -o run        # stage by stage, then the factor of safety
 pytest
@@ -176,6 +180,10 @@ Every row is a test in `tests/`:
 | Raft on a restrained column | `(q + w) H / M`, no moment | exact |
 | Anchor lock-off | `P₀`, then `P₀ + EA/L Δ` | exact |
 | Cantilever wall, plane-strain slice (`pytest -m slow`) | 2D Lythos: 9.83 kNm/m, 1.22 mm | 9.65 kNm/m, 1.21 mm |
+| Wall drawn in plan round a pit, level and sloping ground | area below ground | within 0.01% |
+| Wall faces | faces of the tetrahedra | all |
+| Anchor ends inside the soil | exact nodes | exact |
+| Walled pit, gmsh site against structured box (`pytest -m slow`) | box: 0.34 mm, 30.5 kNm/m | 0.34 mm, 32.2 kNm/m |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
 0.5%, and falls with refinement the same way:
@@ -220,9 +228,10 @@ which it sums. So a repeated run can land one bracket lower, for example
    meshed by gmsh, site files.~~
    Still to come here: DXF plan import (with the interface), and ground loads
    on an irregular surface.
-4. **Structures**: ~~plates for walls and rafts, anchors and struts~~.
-   Still to come here: soil–wall interfaces (wall friction), embedded
-   beams for piles, walls drawn in plan for gmsh sites.
+4. **Structures**: ~~plates for walls and rafts, anchors and struts, walls
+   drawn in plan for gmsh sites~~.
+   Still to come here: soil–wall interfaces (wall friction) and embedded
+   beams for piles.
 5. **Interface**: a three.js viewer for contours and cut planes, a plan
    editor, DXF plan import and an HTML report.
 

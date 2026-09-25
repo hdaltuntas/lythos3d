@@ -60,3 +60,24 @@ def sloping_site(mesh_size: float = 2.5):
     )
     pit = Excavation("pit", [(4.0, 4.0), (12.0, 4.0), (12.0, 10.0), (4.0, 10.0)], [-1.5, -3.0])
     return Site("pit on sloping ground", profile, (0.0, 30.0), (0.0, 20.0), [pit], mesh_size=mesh_size)
+
+
+def walled_pit(mesh_size: float = 2.5):
+    """The pit of :func:`sloping_site`, now inside a diaphragm wall with a strut.
+
+    A 0.6 m wall runs round the pit down to 9 m, installed before digging.
+    A strut crosses the pit at 1 m below the original ground at BH1, and is
+    fitted after the first lift has exposed it.
+    """
+    from .core.site import SiteAnchor, SiteWall
+    from .core.structures import PlateSection
+
+    site = sloping_site(mesh_size)
+    wall = SiteWall("diaphragm wall", [(4.0, 4.0), (12.0, 4.0), (12.0, 10.0), (4.0, 10.0), (4.0, 4.0)],
+                    toe=-9.0, section=PlateSection(E=3.0e7, nu=0.2, t=0.6, weight=0.0))
+    # a strut is preloaded in compression: a negative lock-off load
+    strut = SiteAnchor("strut", (4.0, 7.0, -1.0), (12.0, 7.0, -1.0), EA=2.0e6, prestress=-100.0)
+    site.name = "walled pit on sloping ground"
+    site.walls, site.anchors = [wall], [strut]
+    site.stages = site.default_stages()
+    return site

@@ -310,3 +310,33 @@ installs it, it is a pair of jack forces `P₀` pulling its ends together. At
 the end of that stage it is locked off, and from then on it carries
 `N = P₀ + EA/L · (extension − extension at lock-off)`, with stiffness
 `EA/L e eᵀ`. A strut is a bar with `P₀ = 0`.
+
+## Walls and anchors on a site
+
+A wall drawn in plan is a polyline with a toe level and, optionally, a top
+level (by default the ground). Each segment becomes a vertical rectangle,
+clipped to the ground by intersecting it with the soil solid, and is
+fragmented into the geometry with the soil interfaces and the lifts. A wall
+along the edge of a pit coincides with the lift's side, and the fragment
+merges the two surfaces. After meshing, the wall's triangles are taken from
+the surfaces the fragment made of it, and their mid-edge nodes are looked up
+on the tetrahedra's edges. The plate is therefore conforming by
+construction, which is tested.
+
+Two things need care:
+
+- **A wall that stops short of the base** does not divide the soil. It is
+  embedded in a volume rather than bounding one, so the clean-up that
+  removes leftover surfaces must spare it.
+- **Anchor ends** are embedded as points. A point on a wall is embedded in
+  the wall surface reliably. A point free in the soil should be embedded in
+  its volume by the fragment, but OpenCASCADE's inside test can fail near a
+  lofted soil surface: it did so 0.36 m below one, where the layer itself
+  was reproduced to 2 mm. The point is then silently left out, and a
+  missing node index of −1 picked the last node of the mesh. Now every such
+  point's volume is found from a first mesh, by a barycentric test on its
+  tetrahedra, and the point is embedded explicitly before meshing again. A
+  point that still has no node is an error, never a silent substitute.
+
+With no stages given, walls are installed after the initial stresses, and
+each anchor is stressed right after the lift that exposes its head.

@@ -176,13 +176,15 @@ class Model:
 
 @dataclass
 class Site:
-    """Ground from boreholes, with excavations drawn in plan: meshed by gmsh.
+    """Ground from boreholes, with excavations, walls and anchors drawn in plan: meshed by gmsh.
 
     The model spans ``x`` by ``y`` in plan, from the base of ``profile`` up
     to the ground surface the boreholes define.  Each lift of each
-    excavation becomes an element group named ``"<excavation> <lift>"``
-    that stages can dig out.  Without ``stages`` the sequence is: K0 initial
-    stresses, every lift in the order given, then the factor of safety.
+    excavation becomes an element group named ``"<excavation> <lift>"``.
+
+    Without ``stages`` the sequence is: K0 initial stresses; every wall
+    installed; every lift in the order given, each anchor stressed as soon as
+    the dig has gone below its head; then the factor of safety.
     """
 
     name: str
@@ -192,25 +194,46 @@ class Site:
     excavations: list = field(default_factory=list)
     stages: list[Stage] = field(default_factory=list)
     mesh_size: float = 2.0
+    walls: list = field(default_factory=list)
+    anchors: list = field(default_factory=list)
 
     def __post_init__(self):
         names = [n for e in self.excavations for n in e.lift_names]
+        names += [w.name for w in self.walls] + [a.name for a in self.anchors]
         if len(set(names)) != len(names):
-            raise ValueError("excavation names must be unique")
+            raise ValueError("excavation lifts, walls and anchors need distinct names")
         if not self.stages:
-            self.stages = [Stage("initial stresses", kind="initial", initial_stress="k0")]
-            for exc in self.excavations:
-                for name, level in zip(exc.lift_names, exc.levels):
-                    self.stages.append(Stage(f"{exc.name}: dig to {level:g}", excavate=(name,)))
-            self.stages.append(Stage("factor of safety", kind="ssr"))
+            self.stages = self.default_stages()
+
+    def default_stages(self) -> list[Stage]:
+        stages = [Stage("initial stresses", kind="initial", initial_stress="k0")]
+        if self.walls:
+            stages.append(Stage("install walls", install=tuple(w.name for w in self.walls)))
+        pending = list(self.anchors)
+        for exc in self.excavations:
+            for name, level in zip(exc.lift_names, exc.levels):
+                stages.append(Stage(f"{exc.name}: dig to {level:g}", excavate=(name,)))
+                ready = [a for a in pending if a.a[2] >= level]
+                if ready:
+                    stages.append(Stage(f"stress {', '.join(a.name for a in ready)}",
+                                        install=tuple(a.name for a in ready)))
+                    pending = [a for a in pending if a not in ready]
+        if pending:
+            stages.append(Stage("install " + ", ".join(a.name for a in pending),
+                                install=tuple(a.name for a in pending)))
+        stages.append(Stage("factor of safety", kind="ssr"))
+        return stages
 
     def build(self, verbose: bool = False) -> Problem:
         import warnings
 
         from .gmsh_mesh import mesh_site
+        from .structures import Bar, Plate
 
-        mesh, groups = mesh_site(self.profile, self.x, self.y, self.excavations,
-                                 mesh_size=self.mesh_size, verbose=verbose)
+        points = [a.a for a in self.anchors] + [a.b for a in self.anchors if not a.fixed_end]
+        mesh, groups, wall_faces, point_nodes = mesh_site(
+            self.profile, self.x, self.y, self.excavations, mesh_size=self.mesh_size,
+            verbose=verbose, walls=self.walls, points=points)
         worst = float(mesh.quality().min())
         if worst < 0.002:
             warnings.warn(f"the mesh has a nearly flat element (radius ratio {worst:.3g}); "
@@ -219,8 +242,19 @@ class Site:
         empty = [name for name, mask in groups.items() if not mask.any()]
         if empty:
             raise ValueError(f"lift(s) {empty} contain no ground: are they above the surface?")
+        plates = [Plate(w.name, wall_faces[w.name], w.section) for w in self.walls]
+        heads = iter(point_nodes[:len(self.anchors)])
+        ends = iter(point_nodes[len(self.anchors):])
+        bars = []
+        for a in self.anchors:
+            head = next(heads)
+            if a.fixed_end:
+                bars.append(Bar(a.name, head, None, a.EA, a.prestress, fixed_point=tuple(a.b)))
+            else:
+                bars.append(Bar(a.name, head, next(ends), a.EA, a.prestress))
         materials = {i: s.material for i, s in enumerate(self.profile.soils)}
-        return Problem(mesh, materials, groups=groups, vertical_stress=self.profile.overburden)
+        return Problem(mesh, materials, groups=groups, vertical_stress=self.profile.overburden,
+                       plates=plates, bars=bars)
 
     def run(self, verbose: bool = False, backend: str = "auto", tolerance: float = 1e-3):
         """Mesh, then analyse every stage: ``(problem, list of StageResult)``."""

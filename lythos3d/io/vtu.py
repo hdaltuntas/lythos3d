@@ -14,6 +14,7 @@ import os
 import numpy as np
 
 VTK_QUADRATIC_TETRA = 24
+VTK_QUADRATIC_TRIANGLE = 22
 
 _TYPES = {
     np.dtype(np.float64): "Float64",
@@ -43,10 +44,11 @@ def _array(name: str, data: np.ndarray, indent: str) -> str:
 
 def write_vtu(path: str | os.PathLike, nodes: np.ndarray, elements: np.ndarray,
               point_data: dict | None = None, cell_data: dict | None = None) -> str:
-    """Write a mesh of 10-node tetrahedra and its fields to ``path``."""
+    """Write a mesh of 10-node tetrahedra (or 6-node triangles) and its fields to ``path``."""
     nodes = np.asarray(nodes, dtype=np.float64)
     elements = np.asarray(elements, dtype=np.int64)
-    ne = len(elements)
+    ne, npe = elements.shape if elements.ndim == 2 else (0, 10)
+    cell_type = {10: VTK_QUADRATIC_TETRA, 6: VTK_QUADRATIC_TRIANGLE}[npe]
     parts = [
         '<?xml version="1.0"?>\n',
         '<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndian" '
@@ -65,8 +67,8 @@ def write_vtu(path: str | os.PathLike, nodes: np.ndarray, elements: np.ndarray,
         "      </Points>\n",
         "      <Cells>\n",
         _array("connectivity", elements.ravel(), "        "),
-        _array("offsets", 10 * np.arange(1, ne + 1, dtype=np.int64), "        "),
-        _array("types", np.full(ne, VTK_QUADRATIC_TETRA, dtype=np.uint8), "        "),
+        _array("offsets", npe * np.arange(1, ne + 1, dtype=np.int64), "        "),
+        _array("types", np.full(ne, cell_type, dtype=np.uint8), "        "),
         "      </Cells>\n",
         "    </Piece>\n",
         "  </UnstructuredGrid>\n",
@@ -144,3 +146,33 @@ def write_stage(path: str | os.PathLike, problem, result) -> str:
             "plastic_fraction": per_element(result.state.yielding.astype(float)),
         },
     )
+
+
+def write_plates(path: str | os.PathLike, problem, result) -> str | None:
+    """Write the plates installed at a stage, with their forces per element, for ParaView.
+
+    Moments and forces are element means in each element's own axes; the
+    local axis most nearly vertical is reported as ``M_vertical`` (the
+    bending moment of a wall about a horizontal axis) and the other as
+    ``M_horizontal``.  Returns None when no plate is installed.
+    """
+    faces, fields = [], {k: [] for k in ("M_vertical", "M_horizontal", "M_twist", "N_vertical",
+                                         "N_horizontal", "plate")}
+    for k, (plate, el) in enumerate(zip(problem.plates, problem.plate_elements)):
+        if plate.name not in result.plate_forces:
+            continue
+        N, M, _ = result.plate_forces[plate.name]
+        Nm, Mm = N.mean(axis=1), M.mean(axis=1)
+        vertical_is_x = np.abs(el.R[:, 0, 2]) >= np.abs(el.R[:, 1, 2])
+        faces.append(plate.faces)
+        fields["M_vertical"].append(np.where(vertical_is_x, Mm[:, 0], Mm[:, 1]))
+        fields["M_horizontal"].append(np.where(vertical_is_x, Mm[:, 1], Mm[:, 0]))
+        fields["M_twist"].append(Mm[:, 2])
+        fields["N_vertical"].append(np.where(vertical_is_x, Nm[:, 0], Nm[:, 1]))
+        fields["N_horizontal"].append(np.where(vertical_is_x, Nm[:, 1], Nm[:, 0]))
+        fields["plate"].append(np.full(len(plate.faces), k, dtype=np.int64))
+    if not faces:
+        return None
+    return write_vtu(path, problem.mesh.nodes, np.concatenate(faces),
+                     point_data={"displacement": result.displacement},
+                     cell_data={k: np.concatenate(v) for k, v in fields.items()})

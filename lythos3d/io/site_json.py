@@ -39,11 +39,26 @@ import os
 from ..core.materials import LinearElastic, MohrCoulomb
 from ..core.model import Site
 from ..core.problem import Stage
-from ..core.site import Borehole, Excavation, Soil, SoilProfile
+from ..core.site import Borehole, Excavation, SiteAnchor, SiteWall, Soil, SoilProfile
+from ..core.structures import PlateSection
 
 MODELS = {"mohr-coulomb": MohrCoulomb, "linear-elastic": LinearElastic}
-_STAGE_KEYS = {"name", "kind", "increments", "excavate", "reset_displacements",
+_STAGE_KEYS = {"name", "kind", "increments", "excavate", "install", "reset_displacements",
                "initial_stress", "srf_min", "srf_max"}
+
+
+def section_from_dict(d: dict, owner: str) -> PlateSection:
+    """``{"E", "nu", "t"}`` or ``{"EA", "EI"}`` per metre, with optional ``nu`` and ``weight``."""
+    if "EA" in d or "EI" in d:
+        if "EA" not in d or "EI" not in d:
+            raise ValueError(f"wall {owner!r}: give both EA and EI")
+        return PlateSection.from_stiffness(float(d["EA"]), float(d["EI"]), float(d.get("nu", 0.2)),
+                                           float(d.get("weight", 0.0)))
+    try:
+        return PlateSection(E=float(d["E"]), nu=float(d.get("nu", 0.2)), t=float(d["t"]),
+                            weight=float(d.get("weight", 0.0)))
+    except KeyError as err:
+        raise ValueError(f"wall {owner!r}: needs E and t, or EA and EI") from err
 
 
 def material_from_dict(d: dict):
@@ -73,6 +88,12 @@ def site_from_dict(d: dict) -> Site:
         excavations = [Excavation(e["name"], [tuple(map(float, p)) for p in e["polygon"]],
                                   [float(z) for z in e["levels"]], e.get("mesh_size"))
                        for e in d.get("excavations", [])]
+        walls = [SiteWall(w["name"], [tuple(map(float, p)) for p in w["path"]], float(w["toe"]),
+                          section_from_dict(w, w["name"]), None if w.get("top") is None else float(w["top"]))
+                 for w in d.get("walls", [])]
+        anchors = [SiteAnchor(a["name"], tuple(map(float, a["a"])), tuple(map(float, a["b"])), float(a["EA"]),
+                              float(a.get("prestress", 0.0)), bool(a.get("fixed_end", False)))
+                   for a in d.get("anchors", [])]
         stages = []
         for s in d.get("stages", []):
             unknown = set(s) - _STAGE_KEYS
@@ -81,7 +102,7 @@ def site_from_dict(d: dict) -> Site:
             stages.append(Stage(**s))
         extent = d["extent"]
         return Site(d.get("name", "site"), profile, tuple(extent["x"]), tuple(extent["y"]),
-                    excavations, stages, float(d.get("mesh_size", 2.0)))
+                    excavations, stages, float(d.get("mesh_size", 2.0)), walls, anchors)
     except KeyError as err:
         raise ValueError(f"the site description is missing {err}") from None
 
@@ -99,8 +120,14 @@ def site_to_dict(site: Site) -> dict:
                       for b in profile.boreholes],
         "excavations": [{"name": e.name, "polygon": [list(p) for p in e.polygon], "levels": list(e.levels),
                          **({"mesh_size": e.mesh_size} if e.mesh_size else {})} for e in site.excavations],
+        "walls": [{"name": w.name, "path": [list(p) for p in w.path], "toe": w.toe, "top": w.top,
+                   "E": w.section.E, "nu": w.section.nu, "t": w.section.t, "weight": w.section.weight}
+                  for w in site.walls],
+        "anchors": [{"name": a.name, "a": list(a.a), "b": list(a.b), "EA": a.EA, "prestress": a.prestress,
+                     "fixed_end": a.fixed_end} for a in site.anchors],
         "stages": [{"name": s.name, "kind": s.kind, "increments": s.increments,
-                    "excavate": list(s.excavate), "reset_displacements": s.reset_displacements,
+                    "excavate": list(s.excavate), "install": list(s.install),
+                    "reset_displacements": s.reset_displacements,
                     "initial_stress": s.initial_stress, "srf_min": s.srf_min, "srf_max": s.srf_max}
                    for s in site.stages if not s.loads],
     }

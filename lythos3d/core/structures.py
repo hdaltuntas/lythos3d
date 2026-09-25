@@ -266,7 +266,9 @@ class Bar:
     With ``b`` None the far end is held fixed at ``fixed_point`` (a strut
     against a symmetry plane, or an anchor whose grout body is taken as
     rigid).  ``EA`` is per bar (kN), and ``prestress`` (kN, tension positive)
-    the lock-off load applied in the installing stage.
+    the lock-off load applied in the installing stage: positive for an
+    anchor, which pulls the wall back; negative for a strut, which is jacked
+    against the wall.
     """
 
     name: str

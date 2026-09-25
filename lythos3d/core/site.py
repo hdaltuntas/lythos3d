@@ -231,3 +231,45 @@ class Excavation:
 def _signed_area(p: np.ndarray) -> float:
     x, y = p[:, 0], p[:, 1]
     return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+
+@dataclass
+class SiteWall:
+    """A wall drawn in plan: a polyline, from ``toe`` level up to ``top``.
+
+    Without ``top`` the wall reaches the ground surface wherever it is.  A
+    polyline whose last point repeats the first closes on itself, as a wall
+    round a pit does.  ``section`` is a :class:`~lythos3d.core.structures.PlateSection`.
+    """
+
+    name: str
+    path: list[tuple[float, float]]
+    toe: float
+    section: object
+    top: float | None = None
+
+    def __post_init__(self):
+        if len(self.path) < 2:
+            raise ValueError(f"wall {self.name!r} needs at least two points")
+        if self.top is not None and self.top <= self.toe:
+            raise ValueError(f"wall {self.name!r}: its top must be above its toe")
+        p = np.asarray(self.path, float)
+        if np.any(np.linalg.norm(np.diff(p, axis=0), axis=1) < 1e-9):
+            raise ValueError(f"wall {self.name!r} repeats a point")
+
+
+@dataclass
+class SiteAnchor:
+    """An anchor or strut from point ``a`` to point ``b`` (3D coordinates).
+
+    With ``fixed_end`` the end at ``b`` is held fixed (a strut to a plane of
+    symmetry); otherwise both ends are nodes of the mesh.  ``EA`` (kN) and
+    ``prestress`` (kN) are per anchor.
+    """
+
+    name: str
+    a: tuple[float, float, float]
+    b: tuple[float, float, float]
+    EA: float
+    prestress: float = 0.0
+    fixed_end: bool = False

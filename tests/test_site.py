@@ -106,7 +106,7 @@ def test_level_site_mesh_has_exact_layer_and_lift_volumes():
 
     p = SoilProfile(_soils(), [Borehole("A", 10, 10, [("fill", 0), ("clay", -2), ("sand", -6)])], -15)
     pit = Excavation("pit", [(4, 4), (12, 4), (12, 10), (4, 10)], [-1.5, -3.0])
-    mesh, groups = mesh_site(p, (0, 20), (0, 16), [pit], mesh_size=2.0)
+    mesh, groups, _, _ = mesh_site(p, (0, 20), (0, 16), [pit], mesh_size=2.0)
     v = ContinuumElements(mesh.nodes, mesh.elements).volumes()
     assert v.sum() == pytest.approx(20 * 16 * 15)
     for soil, thickness in enumerate([2, 4, 9]):
@@ -128,7 +128,7 @@ def test_sloping_site_mesh_follows_the_interpolated_strata():
 
     p = SoilProfile(_soils(), _three_boreholes(), -15)
     pit = Excavation("pit", [(4, 4), (12, 4), (12, 10), (4, 10)], [-1.5, -3.0])
-    mesh, groups = mesh_site(p, (0, 30), (0, 20), [pit], mesh_size=2.0)
+    mesh, groups, _, _ = mesh_site(p, (0, 30), (0, 20), [pit], mesh_size=2.0)
     v = ContinuumElements(mesh.nodes, mesh.elements).volumes()
     reference = _reference_volumes(p, (0, 30), (0, 20))
     for soil in range(3):

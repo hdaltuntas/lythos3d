@@ -91,10 +91,10 @@ def _pit(args) -> int:
 
 
 def _site_example(args) -> int:
-    from .examples import sloping_site
+    from .examples import walled_pit
     from .io.site_json import save_site
 
-    print(f"written {save_site(sloping_site(), args.out)}")
+    print(f"written {save_site(walled_pit(), args.out)}")
     return 0
 
 
@@ -125,9 +125,11 @@ def _mesh(args) -> int:
 def _run(args) -> int:
     import json
 
+    import numpy as np
+
     from .core.solver import Solver
     from .io.site_json import load_site
-    from .io.vtu import write_stage
+    from .io.vtu import write_plates, write_stage
 
     site = load_site(args.site)
     stages = [s for s in site.stages if not (args.no_fos and s.kind == "ssr")]
@@ -140,7 +142,11 @@ def _run(args) -> int:
         problem.check_stage_groups(stage)
         r = solver.run_stage(stage)
         path = write_stage(os.path.join(args.out, f"stage{k}.vtu"), problem, r)
+        write_plates(os.path.join(args.out, f"plates{k}.vtu"), problem, r)
+        moments = {name: round(float(np.abs(M).max()), 2) for name, (_, M, _) in r.plate_forces.items()}
         summary.append({"stage": stage.name, "converged": r.converged, "seconds": round(r.seconds, 1),
+                        "max_plate_moment_kNm_per_m": moments,
+                        "anchor_forces_kN": {k: round(v, 1) for k, v in r.bar_forces.items()},
                         "max_displacement_mm": round(1000 * r.max_displacement, 2),
                         "plastic_fraction": round(r.plastic_fraction, 4),
                         "factor_of_safety": r.srf, "message": r.message, "file": path})
@@ -148,12 +154,16 @@ def _run(args) -> int:
         line += (f", factor of safety {r.srf:.2f}" if r.srf is not None
                  else f", moved up to {1000 * r.max_displacement:.1f} mm in this stage" if k else "")
         print(f"{line}  ({r.seconds:.0f} s)", flush=True)
+        for name, m in moments.items():
+            print(f"    {name}: largest moment {m:.1f} kNm/m")
+        for name, force in r.bar_forces.items():
+            print(f"    {name}: {force:.0f} kN")
         if not r.converged:
             print(f"    {r.message}")
             break
     with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2)
-    print(f"results in {args.out}/ (stage*.vtu for ParaView, summary.json)")
+    print(f"results in {args.out}/ (stage*.vtu and plates*.vtu for ParaView, summary.json)")
     return 0 if all(s["converged"] for s in summary) else 1
 
 
@@ -182,7 +192,7 @@ def main(argv=None) -> int:
     p.add_argument("-v", "--verbose", action="store_true", help="report every strength reduction trial")
     p.set_defaults(func=_pit)
 
-    p = sub.add_parser("site-example", help="write an example site description (boreholes and a pit)")
+    p = sub.add_parser("site-example", help="write an example site: boreholes, a walled and strutted pit")
     p.add_argument("-o", "--out", default="site.json")
     p.set_defaults(func=_site_example)
 

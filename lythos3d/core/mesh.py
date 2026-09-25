@@ -69,6 +69,31 @@ class Mesh:
         _, first = np.unique(np.sort(faces[:, :3], axis=1), axis=0, return_index=True)
         return faces[np.sort(first)]
 
+    def faces_from_corners(self, corners: np.ndarray) -> np.ndarray:
+        """6-node faces (corners, then mid-edges ab, bc, ca) for triangles given by corner nodes.
+
+        The mid-edge nodes are looked up on the elements' edges; every edge
+        of every triangle must be an element edge, as it is for a surface
+        meshed conformally with the volume.
+        """
+        corners = np.asarray(corners, dtype=np.int64)
+        n = self.n_nodes
+        ends = np.concatenate([self.elements[:, [i, j]] for i, j in TET10_EDGES])
+        mids = np.concatenate([self.elements[:, 4 + k] for k in range(6)])
+        keys = ends.min(axis=1) * n + ends.max(axis=1)
+        keys, first = np.unique(keys, return_index=True)
+        mids = mids[first]
+        out = np.empty((len(corners), 6), dtype=np.int64)
+        out[:, :3] = corners
+        for k, (i, j) in enumerate(((0, 1), (1, 2), (2, 0))):
+            a, b = corners[:, i], corners[:, j]
+            key = np.minimum(a, b) * n + np.maximum(a, b)
+            pos = np.clip(np.searchsorted(keys, key), 0, len(keys) - 1)
+            if not np.all(keys[pos] == key):
+                raise ValueError("a triangle edge is not an edge of the mesh")
+            out[:, 3 + k] = mids[pos]
+        return out
+
     def nearest_node(self, point, corners_only: bool = True) -> int:
         candidates = np.unique(self.elements[:, :4]) if corners_only else np.arange(self.n_nodes)
         d = np.linalg.norm(self.nodes[candidates] - np.asarray(point, float), axis=1)

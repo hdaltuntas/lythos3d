@@ -25,8 +25,22 @@ from __future__ import annotations
 
 import numpy as np
 
-from .mesh import quadratic_from_linear
-from .site import Excavation, SoilProfile
+from typing import NamedTuple
+
+from .mesh import Mesh, quadratic_from_linear
+from .site import Excavation, SiteWall, SoilProfile
+
+
+class SiteMesh(NamedTuple):
+    """What :func:`mesh_site` produces."""
+
+    mesh: Mesh
+    #: lift name -> element mask
+    groups: dict
+    #: wall name -> 6-node faces (nf, 6) of the mesh on that wall
+    wall_faces: dict
+    #: node index of each point asked to be a node, in order
+    point_nodes: list
 
 
 def _require_gmsh():
@@ -45,8 +59,14 @@ def _require_gmsh():
 
 def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, float],
               excavations: list[Excavation] = (), mesh_size: float = 2.0,
-              sample_spacing: float | None = None, verbose: bool = False):
-    """Mesh a site: ``(Mesh with mesh.region = soil index, {lift name: element mask})``."""
+              sample_spacing: float | None = None, verbose: bool = False,
+              walls: list[SiteWall] = (), points=()) -> SiteMesh:
+    """Mesh a site; ``mesh.region`` is the soil index of every element.
+
+    ``walls`` become surfaces of element faces - through the soil, or
+    embedded in it where a wall stops short of the base - and every point in
+    ``points`` becomes a node, so an anchor can end exactly where it should.
+    """
     gmsh = _require_gmsh()
     (x0, x1), (y0, y1) = x, y
     if not (x1 > x0 and y1 > y0):
@@ -108,12 +128,44 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
                 clipped, _ = occ.intersect(prism, domain, removeObject=True, removeTool=False)
                 tools.extend(clipped)
 
-        if tools:
-            occ.fragment(domain, tools)
+        # walls: a vertical rectangle per segment, clipped to the ground
+        wall_tools = {}
+        for wall in walls:
+            path = np.asarray(wall.path, float)
+            top = z_high if wall.top is None else wall.top
+            wall_tools[wall.name] = []
+            for (xa, ya), (xb, yb) in zip(path[:-1], path[1:]):
+                corners = [occ.addPoint(xa, ya, wall.toe), occ.addPoint(xb, yb, wall.toe),
+                           occ.addPoint(xb, yb, top), occ.addPoint(xa, ya, top)]
+                lines = [occ.addLine(a, b) for a, b in zip(corners, corners[1:] + corners[:1])]
+                face = occ.addPlaneSurface([occ.addCurveLoop(lines)])
+                clipped, _ = occ.intersect([(2, face)], domain, removeObject=True, removeTool=False)
+                if not clipped:
+                    raise ValueError(f"wall {wall.name!r} has a segment wholly outside the ground")
+                wall_tools[wall.name] += list(range(len(tools), len(tools) + len(clipped)))
+                tools.extend(clipped)
+        point_tools = []
+        for px, py, pz in points:
+            point_tools.append(len(tools))
+            tools.append((0, occ.addPoint(px, py, pz)))
+
+        out_map = occ.fragment(domain, tools)[1] if tools else []
         occ.synchronize()
+        offset = len(domain)
+        wall_surfaces = {name: sorted({t for i in idx for d, t in out_map[offset + i] if d == 2})
+                         for name, idx in wall_tools.items()}
+        point_entities = []
+        for i in point_tools:
+            found = [t for d, t in out_map[offset + i] if d == 0]
+            if not found:
+                raise ValueError(f"point {points[len(point_entities)]} lies outside the ground")
+            point_entities.append(found[0])
 
         volumes = gmsh.model.getEntities(3)
         keep = {abs(t) for _, t in gmsh.model.getBoundary(volumes, combined=False, oriented=False)}
+        # a wall that stops short of the base is embedded in a volume rather
+        # than bounding one: it must not be taken for a leftover
+        keep |= {t for tags in wall_surfaces.values() for t in tags}
         stray = [(2, t) for _, t in gmsh.model.getEntities(2) if t not in keep]
         if stray:
             occ.remove(stray, recursive=True)
@@ -162,6 +214,16 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
             gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
             gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
+        # A point inside a volume should be embedded in it by the fragment,
+        # but OpenCASCADE's inside test can fail near a lofted surface and the
+        # point is then silently left out.  Find the volume from a first mesh
+        # instead - our own barycentric test - and embed it explicitly.
+        attached = set()
+        for dim in (1, 2, 3):
+            for _, tag in gmsh.model.getEntities(dim):
+                attached |= {t for d, t in gmsh.model.mesh.getEmbedded(dim, tag) if d == 0}
+                attached |= {abs(t) for d, t in gmsh.model.getBoundary([(dim, tag)], recursive=True) if d == 0}
+        lost = [(i, tag) for i, tag in enumerate(point_entities) if tag not in attached]
         # HXT: on thin slabs of soil (a lift floor half a metre above a layer
         # boundary) it avoids the near-flat elements the default Delaunay
         # mesher leaves there - worst radius ratio 0.30 against 0.01.  One
@@ -170,9 +232,39 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
         gmsh.option.setNumber("Mesh.MaxNumThreads3D", 1)
         gmsh.option.setNumber("Mesh.Optimize", 1)
         gmsh.model.mesh.generate(3)
+        if lost:
+            node_tags, coords, _ = gmsh.model.mesh.getNodes()
+            where = dict(zip(node_tags.astype(np.int64), coords.reshape(-1, 3)))
+            for i, point in lost:
+                q = np.asarray(points[i], float)
+                host = None
+                for _, vol in gmsh.model.getEntities(3):
+                    types, _, conn = gmsh.model.mesh.getElements(3, vol)
+                    tets = np.asarray(conn[0], dtype=np.int64).reshape(-1, 4)
+                    P = np.stack([np.array([where[t] for t in col]) for col in tets.T], axis=1)
+                    lam = np.linalg.solve(np.transpose(P[:, 1:] - P[:, :1], (0, 2, 1)),
+                                          (q - P[:, 0])[:, :, None])[:, :, 0]
+                    if np.any(np.all(np.column_stack([1 - lam.sum(axis=1), lam]) >= -1e-9, axis=1)):
+                        host = vol
+                        break
+                if host is None:
+                    raise ValueError(f"point {tuple(points[i])} lies outside the ground")
+                gmsh.model.mesh.embed(0, [point], 3, host)
+            gmsh.model.mesh.clear()
+            gmsh.model.mesh.generate(3)
 
         node_tags, coords, _ = gmsh.model.mesh.getNodes()
         coords = coords.reshape(-1, 3)
+        wall_triangles = {}
+        for name, tags in wall_surfaces.items():
+            tris = []
+            for tag in tags:
+                types, _, conn = gmsh.model.mesh.getElements(2, tag)
+                for etype, c in zip(types, conn):
+                    if etype == 2:
+                        tris.append(np.asarray(c, dtype=np.int64).reshape(-1, 3))
+            wall_triangles[name] = np.concatenate(tris) if tris else np.zeros((0, 3), np.int64)
+        point_tags = [int(gmsh.model.mesh.getNodes(0, tag)[0][0]) for tag in point_entities]
         tets, volume_of = [], []
         for _, tag in gmsh.model.getEntities(3):
             types, _, conn = gmsh.model.mesh.getElements(3, tag)
@@ -193,6 +285,8 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
     used, tets = np.unique(tets, return_inverse=True)
     tets = tets.reshape(-1, 4)
     nodes = coords[used]
+    renumber = np.full(len(node_tags), -1, dtype=np.int64)
+    renumber[used] = np.arange(len(used))
 
     p = nodes[tets]
     vol = np.einsum("ij,ij->i", np.cross(p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]), p[:, 3] - p[:, 0])
@@ -215,4 +309,10 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
             if k >= 0:
                 groups[exc.lift_names[k]][members] = True
     mesh.region = region
-    return mesh, groups
+    wall_faces = {name: mesh.faces_from_corners(renumber[index[tris]]) for name, tris in wall_triangles.items()}
+    point_nodes = [int(renumber[index[t]]) for t in point_tags]
+    if any(n < 0 for n in point_nodes):
+        raise RuntimeError("a point was not meshed into the volume")
+    if any(np.linalg.norm(nodes[n] - np.asarray(q, float)) > 1e-6 * size for n, q in zip(point_nodes, points)):
+        raise RuntimeError("a point's node is not where the point is")
+    return SiteMesh(mesh, groups, wall_faces, point_nodes)
