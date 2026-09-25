@@ -40,6 +40,7 @@ from ..core.materials import LinearElastic, MohrCoulomb
 from ..core.model import Site
 from ..core.problem import Stage
 from ..core.site import Borehole, Excavation, SiteAnchor, SiteWall, Soil, SoilProfile
+from ..core.interfaces import InterfaceSpec
 from ..core.structures import PlateSection
 
 MODELS = {"mohr-coulomb": MohrCoulomb, "linear-elastic": LinearElastic}
@@ -89,7 +90,8 @@ def site_from_dict(d: dict) -> Site:
                                   [float(z) for z in e["levels"]], e.get("mesh_size"))
                        for e in d.get("excavations", [])]
         walls = [SiteWall(w["name"], [tuple(map(float, p)) for p in w["path"]], float(w["toe"]),
-                          section_from_dict(w, w["name"]), None if w.get("top") is None else float(w["top"]))
+                          section_from_dict(w, w["name"]), None if w.get("top") is None else float(w["top"]),
+                          InterfaceSpec(**w["interface"]) if w.get("interface") else None)
                  for w in d.get("walls", [])]
         anchors = [SiteAnchor(a["name"], tuple(map(float, a["a"])), tuple(map(float, a["b"])), float(a["EA"]),
                               float(a.get("prestress", 0.0)), bool(a.get("fixed_end", False)))
@@ -121,7 +123,10 @@ def site_to_dict(site: Site) -> dict:
         "excavations": [{"name": e.name, "polygon": [list(p) for p in e.polygon], "levels": list(e.levels),
                          **({"mesh_size": e.mesh_size} if e.mesh_size else {})} for e in site.excavations],
         "walls": [{"name": w.name, "path": [list(p) for p in w.path], "toe": w.toe, "top": w.top,
-                   "E": w.section.E, "nu": w.section.nu, "t": w.section.t, "weight": w.section.weight}
+                   "E": w.section.E, "nu": w.section.nu, "t": w.section.t, "weight": w.section.weight,
+                   "interface": None if w.interface is None else {
+                       "R": w.interface.R, "virtual_thickness": w.interface.virtual_thickness,
+                       "tensile": w.interface.tensile, "c": w.interface.c, "phi": w.interface.phi}}
                   for w in site.walls],
         "anchors": [{"name": a.name, "a": list(a.a), "b": list(a.b), "EA": a.EA, "prestress": a.prestress,
                      "fixed_end": a.fixed_end} for a in site.anchors],

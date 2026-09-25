@@ -48,11 +48,17 @@ class Wall:
     lo: tuple[float, float, float]
     hi: tuple[float, float, float]
     section: object
+    #: an :class:`~lythos3d.core.interfaces.InterfaceSpec` to let the soil slip on both faces
+    interface: object = None
 
     def __post_init__(self):
         flat = [i for i in range(3) if abs(self.hi[i] - self.lo[i]) < 1e-12]
         if len(flat) != 1:
             raise ValueError(f"wall {self.name!r} must be a rectangle flat in exactly one direction")
+
+    def side(self, points: np.ndarray) -> np.ndarray:
+        axis = next(i for i in range(3) if abs(self.hi[i] - self.lo[i]) < 1e-12)
+        return np.sign(points[:, axis] - self.lo[axis])
 
 
 @dataclass
@@ -149,7 +155,7 @@ class Model:
             faces = mesh.faces_in_box(w.lo, w.hi)
             if len(faces) == 0:
                 raise ValueError(f"wall {w.name!r} lies outside the model")
-            plates.append(Plate(w.name, faces, w.section))
+            plates.append(Plate(w.name, faces, w.section, w.interface, w.side))
         bars = []
         for a in self.anchors:
             na = mesh.nearest_node(a.a)
@@ -242,7 +248,7 @@ class Site:
         empty = [name for name, mask in groups.items() if not mask.any()]
         if empty:
             raise ValueError(f"lift(s) {empty} contain no ground: are they above the surface?")
-        plates = [Plate(w.name, wall_faces[w.name], w.section) for w in self.walls]
+        plates = [Plate(w.name, wall_faces[w.name], w.section, w.interface, w.side) for w in self.walls]
         heads = iter(point_nodes[:len(self.anchors)])
         ends = iter(point_nodes[len(self.anchors):])
         bars = []

@@ -109,6 +109,9 @@ class MaterialState:
     plastic_strain: np.ndarray    # (n, 6) accumulated plastic strain
     eps_p_eq: np.ndarray          # (n,) equivalent plastic strain
     yielding: np.ndarray          # (n,) bool, plastic at the last update
+    #: interface state, (n_interface_elements, n_gauss, 6), carried with the
+    #: soil's so that it is committed and rolled back together with it
+    interface: np.ndarray | None = None
 
     @classmethod
     def zeros(cls, n: int) -> "MaterialState":
@@ -116,7 +119,8 @@ class MaterialState:
 
     def copy(self) -> "MaterialState":
         return MaterialState(self.stress.copy(), self.plastic_strain.copy(),
-                             self.eps_p_eq.copy(), self.yielding.copy())
+                             self.eps_p_eq.copy(), self.yielding.copy(),
+                             None if self.interface is None else self.interface.copy())
 
     def take(self, idx) -> "MaterialState":
         return MaterialState(self.stress[idx], self.plastic_strain[idx],

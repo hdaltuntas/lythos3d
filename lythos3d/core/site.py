@@ -247,6 +247,25 @@ class SiteWall:
     toe: float
     section: object
     top: float | None = None
+    #: an :class:`~lythos3d.core.interfaces.InterfaceSpec` to let the soil slip on both faces
+    interface: object = None
+
+    def side(self, points: np.ndarray) -> np.ndarray:
+        """+1 on the left of the path (walking along it), -1 on the right.
+
+        Taken from the nearest segment in plan, so a closed wall round a pit
+        has the pit on one side and the retained ground on the other.
+        """
+        path = np.asarray(self.path, float)
+        a, b = path[:-1], path[1:]
+        ab = b - a
+        p = points[:, None, :2]
+        t = np.clip(np.einsum("psj,sj->ps", p - a[None], ab) / np.einsum("sj,sj->s", ab, ab), 0, 1)
+        dist = np.linalg.norm(a[None] + t[..., None] * ab[None] - p, axis=2)
+        nearest = dist.argmin(axis=1)
+        rel = points[:, :2] - a[nearest]
+        cross = ab[nearest, 0] * rel[:, 1] - ab[nearest, 1] * rel[:, 0]
+        return np.sign(cross)
 
     def __post_init__(self):
         if len(self.path) < 2:

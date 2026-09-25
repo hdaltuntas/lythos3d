@@ -102,6 +102,7 @@ class Problem:
         unknown = set(self.absent) - set(self.groups)
         if unknown:
             raise ValueError(f"absent group(s) {sorted(unknown)} are not defined")
+        self._split_for_interfaces()
         if self.fixed is None:
             self.fixed = box_fixities(self.mesh)
         self.fixed = np.unique(np.asarray(self.fixed, dtype=np.int64))
@@ -115,6 +116,128 @@ class Problem:
             r: (np.nonzero(self.mesh.region == r)[0][:, None] * ngp + np.arange(ngp)).ravel()
             for r in self.materials
         }
+
+    def _split_for_interfaces(self) -> None:
+        """Give every plate with an interface its own nodes, and the soil behind it its own.
+
+        The tetrahedra touching the plate are sorted into its two sides.  The
+        soil on the + side keeps the original nodes; the plate and the soil on
+        the - side get new ones at the same places, and an interface element
+        joins each side to the plate.  Where the soil runs on past an edge of
+        the plate - below the toe of a wall that stops short of the base, past
+        a wall's end - splitting would open a crack along the plate's plane,
+        so a node is left shared wherever it would split a face that is not
+        the plate's own.
+        """
+        from .interfaces import InterfaceElements
+
+        self.interface_elements = None
+        self.interface_plate = np.zeros(0, dtype=np.int64)
+        self.interface_support = np.zeros(0, dtype=np.int64)
+        split = [i for i, p in enumerate(self.plates) if p.interface is not None]
+        if not split:
+            return
+        seen = set()
+        for i in split:
+            nodes = set(np.unique(self.plates[i].faces).tolist())
+            if nodes & seen:
+                raise ValueError("plates with interfaces may not share nodes: model a wall "
+                                 "round a corner as one plate")
+            seen |= nodes
+            if self.plates[i].side is None:
+                raise ValueError(f"plate {self.plates[i].name!r} has an interface but no side function")
+
+        mesh = self.mesh
+        nodes = mesh.nodes.copy()
+        elements = mesh.elements.copy()
+        local_faces = np.array([(0, 1, 2, 4, 5, 6), (0, 1, 3, 4, 8, 7), (1, 2, 3, 5, 9, 8), (0, 2, 3, 6, 9, 7)])
+        soil_faces, wall_faces, normals, plate_of, support = [], [], [], [], []
+        for i in split:
+            plate = self.plates[i]
+            faces = np.asarray(plate.faces, dtype=np.int64)
+            on_wall = np.zeros(len(nodes), bool)
+            on_wall[faces.ravel()] = True
+            touching = np.nonzero(on_wall[elements].any(axis=1))[0]
+            centroids = nodes[elements[touching, :4]].mean(axis=1)
+            side = np.sign(np.asarray(plate.side(centroids), float)).astype(np.int64)
+            if np.any(side == 0):
+                raise ValueError(f"plate {plate.name!r}: an element lies on neither side")
+
+            # faces of the touching elements, keyed by their corners
+            tf = elements[touching][:, local_faces].reshape(-1, 6)
+            owner = np.repeat(np.arange(len(touching)), 4)
+            keys = np.sort(tf[:, :3], axis=1)
+            wall_keys = {tuple(k) for k in np.sort(faces[:, :3], axis=1).tolist()}
+            order = np.lexsort(keys.T[::-1])
+            ks, tf, owner = keys[order], tf[order], owner[order]
+            same = np.all(ks[1:] == ks[:-1], axis=1)
+            tied = np.zeros(len(nodes), bool)
+            for j in np.nonzero(same)[0]:
+                if side[owner[j]] != side[owner[j + 1]] and tuple(ks[j]) not in wall_keys:
+                    tied[tf[j]] = True
+            splitting = on_wall & ~tied
+
+            new_wall = np.arange(len(nodes))
+            new_back = np.arange(len(nodes))
+            idx = np.nonzero(splitting)[0]
+            new_wall[idx] = len(nodes) + np.arange(len(idx))
+            new_back[idx] = len(nodes) + len(idx) + np.arange(len(idx))
+            nodes = np.vstack([nodes, nodes[idx], nodes[idx]])
+            back = touching[side < 0]
+            elements[back] = new_back[elements[back]]
+            plate.faces = new_wall[faces]
+
+            # interface elements, one per face on each side
+            xyz = nodes[faces[:, :3]]
+            n = np.cross(xyz[:, 1] - xyz[:, 0], xyz[:, 2] - xyz[:, 0])
+            n /= np.linalg.norm(n, axis=1)[:, None]
+            h = np.max(np.linalg.norm(xyz[:, [1, 2, 0]] - xyz, axis=2), axis=1)
+            probe = np.sign(np.asarray(plate.side(xyz.mean(axis=1) + 1e-3 * h[:, None] * n), float))
+            n *= probe[:, None]                                   # now pointing into the + side
+            face_of = {}
+            for e in touching:
+                for lf in local_faces:
+                    face_of[tuple(sorted(elements[e, lf[:3]].tolist()))] = e
+            for sign, soil in ((1, faces), (-1, new_back[faces])):
+                for f in range(len(faces)):
+                    key = tuple(sorted(soil[f, :3].tolist()))
+                    if key not in face_of:
+                        raise ValueError(f"plate {plate.name!r}: a face has no soil on one side")
+                    support.append(face_of[key])
+                soil_faces.append(soil)
+                wall_faces.append(plate.faces)
+                normals.append(sign * n)
+                plate_of.append(np.full(len(faces), i))
+
+        self.mesh = Mesh(nodes, elements, mesh.region)
+        soil_faces = np.concatenate(soil_faces)
+        support = np.array(support, dtype=np.int64)
+        kn, ks, c, tan_phi, tensile = [], [], [], [], []
+        for f, e in enumerate(support):
+            spec = self.plates[int(np.concatenate(plate_of)[f])].interface
+            mat = self.materials[int(self.mesh.region[e])]
+            xyz = nodes[soil_faces[f, :3]]
+            h = float(np.max(np.linalg.norm(xyz[[1, 2, 0]] - xyz, axis=1)))
+            tv = max(spec.virtual_thickness * h, 1e-3)
+            kn.append(mat.oedometer_modulus / tv)
+            ks.append(mat.shear_modulus / tv)
+            if spec.c is not None:
+                c.append(spec.c)
+                tan_phi.append(np.tan(np.radians(spec.phi)))
+            elif hasattr(mat, "phi"):
+                c.append(spec.R * mat.c)
+                tan_phi.append(spec.R * np.tan(np.radians(mat.phi)))
+            else:                                                  # an elastic soil has no strength
+                c.append(np.inf)
+                tan_phi.append(np.inf)
+            tensile.append(spec.tensile)
+        if len(set(tensile)) > 1:
+            raise ValueError("all interfaces must have the same tensile capacity")
+        self.interface_elements = InterfaceElements(
+            nodes, soil_faces, np.concatenate(wall_faces), np.concatenate(normals),
+            kn=np.array(kn), ks=np.array(ks), c=np.array(c), tan_phi=np.array(tan_phi), tensile=tensile[0])
+        self.interface_plate = np.concatenate(plate_of)
+        self.interface_support = support
 
     def _setup_structures(self) -> None:
         """Rotation dofs for plate nodes, element data and the combined pattern."""
@@ -158,6 +281,10 @@ class Problem:
             self.bar_data.append((axis / length, length, np.array(dofs, dtype=np.int64)))
 
         groups = list(self.plate_dofs) + [d[None, :] for _, _, d in self.bar_data]
+        self.interface_dofs = (self.interface_elements.dofs() if self.interface_elements is not None
+                               else np.zeros((0, 36), dtype=np.int64))
+        if len(self.interface_dofs):
+            groups.append(self.interface_dofs)
         self.system_pattern = (CombinedPattern(self.pattern, groups, self.n_dof)
                                if groups else self.pattern)
 

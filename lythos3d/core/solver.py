@@ -49,6 +49,12 @@ class StageResult:
     plate_forces: dict = field(default_factory=dict)
     #: axial force of every installed bar, kN, tension positive
     bar_forces: dict = field(default_factory=dict)
+    #: per plate with an interface: element means of the normal traction
+    #: ``tn`` (kPa, tension positive), the shear traction's size ``tau`` and
+    #: vector ``shear`` (global axes, pointing the way the soil moves
+    #: relative to the wall), and the fraction of the shear strength
+    #: mobilised, for the elements in contact with soil
+    interface_tractions: dict = field(default_factory=dict)
 
     @property
     def max_displacement(self) -> float:
@@ -82,7 +88,12 @@ class Solver:
         self.results: list[StageResult] = []
         self._u = np.zeros(problem.n_dof)
         self._u_offset = np.zeros(problem.n_dof)
-        self._state = MaterialState.zeros(problem.n_points)
+        self._state = self._fresh_state()
+        self._srf = 1.0
+        #: interface contact modes: those of the last evaluation, and those
+        #: held fixed while an increment converges on them
+        self._contact_modes = None
+        self._contact_frozen = None
         self._active = np.ones(problem.mesh.n_elements, bool)
         for name in problem.absent:
             self._active &= ~problem.groups[name]
@@ -133,6 +144,7 @@ class Solver:
             if ref is None:
                 self._bar_reference[i] = self._bar_extension(i, self._u)
         result.plate_forces, result.bar_forces = self._structure_forces(self._u)
+        result.interface_tractions = self._interface_tractions(active)
         result.seconds = time.perf_counter() - t0
         gp_active = np.repeat(active, self.p.continuum.n_gauss)
         result.plastic_fraction = float(np.mean(result.state.yielding[gp_active])) if active.any() else 0.0
@@ -149,7 +161,7 @@ class Solver:
         where it is, and what later stages report is movement from here.
         """
         self._u[:] = 0.0
-        self._state = MaterialState.zeros(self.p.n_points)
+        self._state = self._fresh_state()
         if stage.initial_stress == "k0":
             self._state.stress[:] = self.p.k0_stress(active)
             # a K0 field is in equilibrium only under level ground and level
@@ -179,6 +191,7 @@ class Solver:
 
         def attempt(srf: float) -> bool:
             self.materials = {r: m.reduced(srf) for r, m in base_materials.items()}
+            self._srf = srf                    # interfaces are weakened with the soil
             self._u, self._state = anchor_u.copy(), anchor_state.copy()
             budget = max(self.ssr_min_budget, self.ssr_budget_factor * max(successful, default=25))
             started = time.perf_counter()
@@ -229,6 +242,7 @@ class Solver:
 
         self._u, self._state = anchor_u, anchor_state
         self.materials = base_materials
+        self._srf = 1.0
         return StageResult(name=stage.name, kind=SSR, converged=last_ok is not None,
                            displacement=self._nodal(self._u - reference), state=self._state,
                            active=active, srf=fos, srf_curve=sorted(curve), message=message)
@@ -273,6 +287,8 @@ class Solver:
             u_try = u_committed.copy()
             ok, stalled = False, 0
             reused, previous = False, None
+            self._contact_frozen = None
+            last_rn = None
             evaluated = self._internal(u_try, u_committed, state_committed, active, True)
             for it in range(self.max_iterations):
                 f_int, tangent, symmetric = evaluated
@@ -283,6 +299,21 @@ class Solver:
                 if rn / scale < self.tol:
                     ok = True
                     break
+                # Contact points near their limit can switch between sticking
+                # and sliding from one iteration to the next, leaving an
+                # imbalance no step removes.  Once the iteration slows, hold
+                # every contact in the state it is in; the next increment
+                # starts free again (as in 2D Lythos).
+                if (p.interface_elements is not None and self._contact_frozen is None and it >= 4
+                        and last_rn is not None and rn > 0.5 * last_rn):
+                    self._contact_frozen = self._contact_modes.copy()
+                    evaluated = self._internal(u_try, u_committed, state_committed, active, True)
+                    f_int, tangent, symmetric = evaluated
+                    r = target - f_int
+                    r[fixed] = 0.0
+                    rn = float(np.linalg.norm(r))
+                    self.linear.forget()
+                last_rn = rn
                 # Modified Newton: keep the last factorisation while it still
                 # cuts the imbalance by a factor of three an iteration, and
                 # factorise the current tangent when it stops doing so.
@@ -332,6 +363,7 @@ class Solver:
                     message = message or f"no equilibrium beyond {lam * 100:.0f}% of the stage load"
                     break
 
+        self._contact_frozen = None
         self._u, self._state = u_committed, state_committed
         return StageResult(name=label, kind=stage.kind, converged=lam >= 1.0 - 1e-10,
                            displacement=self._nodal(self._u - self._u_offset),
@@ -411,6 +443,23 @@ class Solver:
                 f_int += assemble_vector(p.n_dof, dofs, np.einsum("fij,fj->fi", el.K, du))
             group_matrices.append(el.K)
             group_active.append(np.full(el.n_elements, installed))
+        ie = p.interface_elements
+        if ie is not None:
+            installed = np.array([i in self._plate_reference for i in range(len(p.plates))])
+            live = active[p.interface_support]
+            Fe, Ke_i, trial, modes = ie.respond(u[p.interface_dofs], state_committed.interface,
+                                                ~installed[p.interface_plate], self._srf,
+                                                modes=self._contact_frozen)
+            self._contact_modes = modes
+            # a sliding contact's tangent is unsymmetric (the coupling of the
+            # shear traction to the normal one): no Cholesky then, whatever
+            # the soil is doing
+            contact = live & installed[p.interface_plate]
+            yielding |= bool(np.any(modes[contact] == ie.SLIDE))
+            Fe[~live] = 0.0
+            f_int += assemble_vector(p.n_dof, p.interface_dofs, Fe)
+            if return_state:
+                new_state.interface = np.where(live[:, None, None], trial, state_committed.interface)
         for i, (axis, length, dofs) in enumerate(p.bar_data):
             locked = self._bar_reference.get(i) is not None
             k = p.bars[i].EA / length
@@ -421,6 +470,9 @@ class Solver:
             group_matrices.append((k * np.outer(b, b))[None])
             group_active.append(np.array([locked]))
 
+        if ie is not None:
+            group_matrices.append(Ke_i)
+            group_active.append(live)
         if tangent:
             # the matrix itself is formed only if this iteration factorises it
             def matrix():
@@ -466,6 +518,38 @@ class Solver:
             bars[p.bars[i].name] = p.bars[i].prestress + (0.0 if ref is None else k * (extension - ref))
         return plates, bars
 
+    def _fresh_state(self) -> MaterialState:
+        state = MaterialState.zeros(self.p.n_points)
+        if self.p.interface_elements is not None:
+            from .interfaces import N_GAUSS, STATE_WIDTH
+            state.interface = np.zeros((self.p.interface_elements.n_elements, N_GAUSS, STATE_WIDTH))
+        return state
+
+    def _interface_tractions(self, active: np.ndarray) -> dict:
+        p = self.p
+        ie = p.interface_elements
+        if ie is None:
+            return {}
+        # element means weighted as the element integrates: the 6-point
+        # rule's weights are not equal
+        w = ie.w / ie.w.sum(axis=1, keepdims=True)
+        t = np.einsum("eg,egi->ei", w, self._state.interface[..., 3:])
+        tn, tau = t[:, 0], np.linalg.norm(t[:, 1:], axis=1)
+        # the shear traction as a vector in global axes (the element's own
+        # in-plane axes are arbitrary)
+        shear = np.einsum("eij,ei->ej", ie.R[:, 1:], t[:, 1:])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            strength = ie.c / self._srf - np.minimum(tn, 0.0) * ie.tan_phi / self._srf
+            mobilised = np.where(np.isfinite(strength) & (strength > 0), tau / strength, 0.0)
+        out = {}
+        live = active[p.interface_support]
+        for i, plate in enumerate(p.plates):
+            mask = (p.interface_plate == i) & live
+            if mask.any() and i in self._plate_reference:
+                out[plate.name] = {"tn": tn[mask], "tau": tau[mask], "shear": shear[mask],
+                                   "mobilised": mobilised[mask]}
+        return out
+
     def _nodal(self, u: np.ndarray) -> np.ndarray:
         """The translations of a system vector, (n_nodes, 3)."""
         return u[:self._n3].reshape(-1, 3)
@@ -475,6 +559,13 @@ class Solver:
         p = self.p
         live = np.zeros(p.mesh.n_nodes, bool)
         live[p.mesh.elements[active].ravel()] = True
+        # a plate's own nodes, split off the soil, are held only by its
+        # interfaces (and, once installed, by the plate itself)
+        if p.interface_elements is not None:
+            on = active[p.interface_support]
+            live[p.interface_elements.wall_faces[on].ravel()] = True
+        for i in self._plate_reference:
+            live[p.plates[i].faces.ravel()] = True
         dead = np.nonzero(~live)[0]
         held = [(3 * dead[:, None] + np.arange(3)).ravel()]
         # rotations belong to plates; until one is installed they are held

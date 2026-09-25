@@ -252,11 +252,18 @@ class PlateElements:
 
 @dataclass
 class Plate:
-    """A named plate - a wall, a raft - on the mesh faces ``faces`` (nf, 6)."""
+    """A named plate - a wall, a raft - on the mesh faces ``faces`` (nf, 6).
+
+    With ``interface`` (an :class:`~lythos3d.core.interfaces.InterfaceSpec`)
+    the soil may slip against the plate on both faces; ``side`` then tells
+    the two faces apart: a function of points (n, 3) returning +1 or -1.
+    """
 
     name: str
     faces: np.ndarray
     section: PlateSection
+    interface: object = None
+    side: object = None
 
 
 @dataclass

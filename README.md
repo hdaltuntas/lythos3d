@@ -49,6 +49,11 @@ whose failure is bounded at its ends. Lythos 3D is for those.
 - **Anchors and struts**: bars between two nodes or to a fixed point,
   stressed to their lock-off load in the stage that installs them
   (positive for an anchor, negative for a strut jacked against the wall).
+- **Wall–soil interfaces**: zero-thickness Mohr-Coulomb contact on both
+  faces of a wall. The contact slips at `c_i + σn tan φ_i`, opens a gap
+  under tension, and ties the ground rigidly until the wall is installed.
+  Its strength is `R` times the soil's, or a wall friction angle given
+  directly; strength reduction weakens it with the soil.
 - **Walls drawn in plan** on a gmsh site: a polyline with a toe level,
   reaching the ground or a given top. A wall may stop short of the base,
   in which case it is embedded in the soil. Anchor ends become exact nodes.
@@ -184,6 +189,10 @@ Every row is a test in `tests/`:
 | Wall faces | faces of the tetrahedra | all |
 | Anchor ends inside the soil | exact nodes | exact |
 | Walled pit, gmsh site against structured box (`pytest -m slow`) | box: 0.34 mm, 30.5 kNm/m | 0.34 mm, 32.2 kNm/m |
+| Interface tangent, sticking, sliding and open | finite-difference derivative | exact |
+| Block sliding on an interface (`pytest -m slow`) | slips at `c A + N tan φ` | holds at 98%, slides at 102%, equilibrium to 1e-6 |
+| Uninstalled wall with interfaces | continuous ground | within 1e-4 |
+| Wall friction: bonded, R = 1, R = 0.67 | each moves more | 1.09, 1.28, 1.68 mm |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
 0.5%, and falls with refinement the same way:
@@ -230,8 +239,7 @@ which it sums. So a repeated run can land one bracket lower, for example
    on an irregular surface.
 4. **Structures**: ~~plates for walls and rafts, anchors and struts, walls
    drawn in plan for gmsh sites~~.
-   Still to come here: soil–wall interfaces (wall friction) and embedded
-   beams for piles.
+   ~~Soil–wall interfaces~~. Still to come here: embedded beams for piles.
 5. **Interface**: a three.js viewer for contours and cut planes, a plan
    editor, DXF plan import and an HTML report.
 

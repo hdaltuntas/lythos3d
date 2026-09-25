@@ -340,3 +340,68 @@ Two things need care:
 
 With no stages given, walls are installed after the initial stresses, and
 each anchor is stressed right after the lift that exposes its head.
+
+## Interfaces
+
+A wall with an interface gets its own nodes. The tetrahedra touching it
+are sorted onto its two sides by the wall's side function: for a wall in
+the box model, the side of its plane; for a wall drawn in plan, the side of
+the nearest segment, so a closed wall has the pit on one side. The soil on
+the + side keeps the original nodes, and the wall and the − side soil get
+new ones at the same places. An interface element joins each side to the
+wall.
+
+**Edges.** Where the soil runs on past an edge of the wall (below the toe
+of a wall that stops short of the base, or past its end), splitting would
+open a crack along the wall's plane. A node is therefore left shared wherever
+splitting it would divide a face that is not the wall's own. In a
+plane-strain slice this leaves exactly the toe line tied, which is tested.
+At the ground surface there is no face beyond the wall, and nothing is
+tied.
+
+**The element.** The element has 12 nodes (6 on the soil face, 6 on the
+wall), and the relative displacement is `u_soil − u_wall`, resolved along
+the normal (pointing into the soil, so positive opens a gap) and in the
+plane:
+
+- elastic: `kn = E_oed / t_v`, `ks = G / t_v`, where `t_v` is a tenth of the
+  local element size, as in 2D Lythos;
+- sliding: `|τ| > c_i − σn tan φ_i`, where the shear traction is returned
+  radially onto the limit (keeping its direction in the plane), with no
+  dilation;
+- open: `σn` above the tensile capacity (zero by default), with no traction.
+
+The update is incremental, so unloading after slip is elastic. The tangent is
+the exact one of the radial return, including the coupling
+`∂τ/∂δn = −tan φ_i kn m`. A residual stiffness of 10⁻³ of the elastic one
+is kept where the exact tangent has none, which is tested with it removed.
+Integration uses the 6-point rule, exact for the quartic integrand; the
+3-point rule gives rank 9 against 18 relative dofs.
+
+**Before and at installation.** Until the wall is installed its
+interfaces tie the two sides by a penalty a hundred times the contact
+stiffness, so the ground is continuous; against ground with no wall the
+difference is 10⁻⁴. At installation the tie's tractions are carried into
+the contact, so the wall is built into ground that is already in
+equilibrium. (2D Lythos clears them, and the soil stress on the wall line
+is then briefly unbalanced.)
+
+**Strength.** `c_i = R c'` and `tan φ_i = R tan φ'` from the soil the
+element sits against, or a `c` and `φ` of the interface's own. Strength
+reduction divides the interface strength along with the soil's. 2D
+reduces only the soil, which leaves the wall friction at full strength in
+the factor of safety.
+
+**Convergence.** Contact points close to the limit switch between
+sticking and sliding from one iteration to the next, and the iteration
+stalls. As in 2D, once it slows (after four iterations, less than halving
+the imbalance) every contact is held in its current state for the rest of
+the increment. The next increment starts free again. On the plane-strain
+wall this took the dig from no convergence in 380 iterations to 69.
+
+**A bug the sliding block found.** Whether the tangent is symmetric, and
+so whether PARDISO may use Cholesky, was decided only by whether any soil
+had yielded. On elastic ground with a sliding interface the unsymmetric
+contact tangent was factorised as if symmetric, and the solutions had
+relative residuals of order one. The tangent now counts as unsymmetric
+whenever a contact slides.
