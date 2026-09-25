@@ -117,3 +117,60 @@ class Model:
         problem = self.build()
         solver = Solver(problem, tolerance=tolerance, backend=backend, verbose=verbose)
         return problem, solver.run(self.stages)
+
+
+@dataclass
+class Site:
+    """Ground from boreholes, with excavations drawn in plan: meshed by gmsh.
+
+    The model spans ``x`` by ``y`` in plan, from the base of ``profile`` up
+    to the ground surface the boreholes define.  Each lift of each
+    excavation becomes an element group named ``"<excavation> <lift>"``
+    that stages can dig out.  Without ``stages`` the sequence is: K0 initial
+    stresses, every lift in the order given, then the factor of safety.
+    """
+
+    name: str
+    profile: object
+    x: tuple[float, float]
+    y: tuple[float, float]
+    excavations: list = field(default_factory=list)
+    stages: list[Stage] = field(default_factory=list)
+    mesh_size: float = 2.0
+
+    def __post_init__(self):
+        names = [n for e in self.excavations for n in e.lift_names]
+        if len(set(names)) != len(names):
+            raise ValueError("excavation names must be unique")
+        if not self.stages:
+            self.stages = [Stage("initial stresses", kind="initial", initial_stress="k0")]
+            for exc in self.excavations:
+                for name, level in zip(exc.lift_names, exc.levels):
+                    self.stages.append(Stage(f"{exc.name}: dig to {level:g}", excavate=(name,)))
+            self.stages.append(Stage("factor of safety", kind="ssr"))
+
+    def build(self, verbose: bool = False) -> Problem:
+        import warnings
+
+        from .gmsh_mesh import mesh_site
+
+        mesh, groups = mesh_site(self.profile, self.x, self.y, self.excavations,
+                                 mesh_size=self.mesh_size, verbose=verbose)
+        worst = float(mesh.quality().min())
+        if worst < 0.01:
+            warnings.warn(f"the mesh has a nearly flat element (radius ratio {worst:.3g}); "
+                          "usually a soil boundary crossing an excavation level at a very "
+                          "shallow angle", RuntimeWarning, stacklevel=2)
+        empty = [name for name, mask in groups.items() if not mask.any()]
+        if empty:
+            raise ValueError(f"lift(s) {empty} contain no ground: are they above the surface?")
+        materials = {i: s.material for i, s in enumerate(self.profile.soils)}
+        return Problem(mesh, materials, groups=groups, vertical_stress=self.profile.overburden)
+
+    def run(self, verbose: bool = False, backend: str = "auto", tolerance: float = 1e-3):
+        """Mesh, then analyse every stage: ``(problem, list of StageResult)``."""
+        from .solver import Solver
+
+        problem = self.build()
+        solver = Solver(problem, tolerance=tolerance, backend=backend, verbose=verbose)
+        return problem, solver.run(self.stages)

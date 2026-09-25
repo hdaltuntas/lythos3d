@@ -73,6 +73,26 @@ class Mesh:
             nodes[self.elements[:, 4 + k]] = 0.5 * (nodes[self.elements[:, i]] + nodes[self.elements[:, j]])
         return Mesh(nodes, self.elements.copy(), self.region.copy())
 
+    def quality(self) -> np.ndarray:
+        """Radius ratio ``3 r_in / r_circ`` of every element's corner tetrahedron.
+
+        1 for a regular tetrahedron, 0 for a flat one.  Below about 0.01 an
+        element starts to spoil the conditioning of the stiffness matrix and
+        the accuracy of the stresses around it.
+        """
+        p = self.nodes[self.elements[:, :4]]
+        a, b, c, d = p[:, 0], p[:, 1], p[:, 2], p[:, 3]
+        ab, ac, ad = b - a, c - a, d - a
+        six_v = np.abs(np.einsum("ij,ij->i", np.cross(ab, ac), ad))
+        area = sum(0.5 * np.linalg.norm(np.cross(q - o, r - o), axis=1)
+                   for o, q, r in ((a, b, c), (a, b, d), (a, c, d), (b, c, d)))
+        r_in = 0.5 * six_v / area
+        num = (np.einsum("ij,ij->i", ad, ad)[:, None] * np.cross(ab, ac)
+               + np.einsum("ij,ij->i", ac, ac)[:, None] * np.cross(ad, ab)
+               + np.einsum("ij,ij->i", ab, ab)[:, None] * np.cross(ac, ad))
+        r_circ = np.linalg.norm(num, axis=1) / (2.0 * six_v)
+        return 3.0 * r_in / r_circ
+
     def assign_regions(self, classify) -> None:
         """Set ``region`` from a function of the element centroids (ne, 3) -> (ne,)."""
         self.region = np.asarray(classify(self.centroids()), dtype=np.int64)
