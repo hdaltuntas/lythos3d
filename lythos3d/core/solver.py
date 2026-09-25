@@ -44,6 +44,11 @@ class StageResult:
     message: str = ""
     seconds: float = 0.0
     plastic_fraction: float = 0.0
+    #: stress resultants of every installed plate: name -> (N, M, Q) as
+    #: :meth:`PlateElements.resultants` returns them
+    plate_forces: dict = field(default_factory=dict)
+    #: axial force of every installed bar, kN, tension positive
+    bar_forces: dict = field(default_factory=dict)
 
     @property
     def max_displacement(self) -> float:
@@ -83,6 +88,11 @@ class Solver:
             self._active &= ~problem.groups[name]
         lo, hi = problem.mesh.bounds
         self._size = float(max(hi - lo))
+        self._n3 = problem.n_translation
+        #: installed plates: index -> displacement when installed
+        self._plate_reference: dict[int, np.ndarray] = {}
+        #: installed bars: index -> None while being stressed, else extension at lock-off
+        self._bar_reference: dict[int, float | None] = {}
 
     # ------------------------------------------------------------------ public
     def run(self, stages, progress=None) -> list[StageResult]:
@@ -102,6 +112,13 @@ class Solver:
         for name in stage.construct:
             self._active |= self.p.groups[name]
         active = self._active.copy()
+        plate_index = {pl.name: i for i, pl in enumerate(self.p.plates)}
+        bar_index = {b.name: i for i, b in enumerate(self.p.bars)}
+        for name in stage.install:
+            if name in plate_index:
+                self._plate_reference.setdefault(plate_index[name], self._u.copy())
+            elif bar_index[name] not in self._bar_reference:
+                self._bar_reference[bar_index[name]] = None
 
         if stage.kind == INITIAL:
             result = self._initial_stage(stage, active)
@@ -111,6 +128,11 @@ class Solver:
             if stage.reset_displacements:
                 self._u_offset = self._u.copy()
             result = self._newton(stage, active, stage.increments, stage.name)
+        # bars stressed in this stage are locked off at the load they carry
+        for i, ref in list(self._bar_reference.items()):
+            if ref is None:
+                self._bar_reference[i] = self._bar_extension(i, self._u)
+        result.plate_forces, result.bar_forces = self._structure_forces(self._u)
         result.seconds = time.perf_counter() - t0
         gp_active = np.repeat(active, self.p.continuum.n_gauss)
         result.plastic_fraction = float(np.mean(result.state.yielding[gp_active])) if active.any() else 0.0
@@ -163,7 +185,7 @@ class Solver:
             res = self._newton(stage, active, max(stage.increments, 6), f"SRF {srf:.3f}", budget)
             if res.converged:
                 successful.append(len(res.iterations))
-            dmax = float(np.linalg.norm((self._u - reference).reshape(-1, 3), axis=1).max())
+            dmax = float(np.linalg.norm(self._nodal(self._u - reference), axis=1).max())
             curve.append((srf, dmax))
             if self.verbose:
                 print(f"    SRF {srf:.3f}: {'equilibrium' if res.converged else 'no equilibrium'},"
@@ -208,7 +230,7 @@ class Solver:
         self._u, self._state = anchor_u, anchor_state
         self.materials = base_materials
         return StageResult(name=stage.name, kind=SSR, converged=last_ok is not None,
-                           displacement=(self._u - reference).reshape(-1, 3), state=self._state,
+                           displacement=self._nodal(self._u - reference), state=self._state,
                            active=active, srf=fos, srf_curve=sorted(curve), message=message)
 
     # ----------------------------------------------------------------- newton
@@ -216,7 +238,7 @@ class Solver:
                 budget: int | None = None) -> StageResult:
         p = self.p
         fixed = np.union1d(p.fixed, self._orphan_dofs(active))
-        f_ext = p.gravity(active) + p.surface_loads(stage.loads)
+        f_ext = p.gravity(active) + p.surface_loads(stage.loads) + self._structure_loads()
         logs: list[IterationLog] = []
 
         u_committed = self._u.copy()
@@ -312,7 +334,7 @@ class Solver:
 
         self._u, self._state = u_committed, state_committed
         return StageResult(name=label, kind=stage.kind, converged=lam >= 1.0 - 1e-10,
-                           displacement=(self._u - self._u_offset).reshape(-1, 3),
+                           displacement=self._nodal(self._u - self._u_offset),
                            state=self._state, active=active, iterations=logs, message=message)
 
     def _limit_step(self, du: np.ndarray) -> np.ndarray:
@@ -379,16 +401,87 @@ class Solver:
         fe = ce.internal_forces(stress)
         fe[~active] = 0.0
         f_int = assemble_vector(p.n_dof, p.dofs, fe)
+
+        # structures: linear elastic, measured from when they were installed
+        group_matrices, group_active = [], []
+        for i, (el, dofs) in enumerate(zip(p.plate_elements, p.plate_dofs)):
+            installed = i in self._plate_reference
+            if installed:
+                du = (u - self._plate_reference[i])[dofs]
+                f_int += assemble_vector(p.n_dof, dofs, np.einsum("fij,fj->fi", el.K, du))
+            group_matrices.append(el.K)
+            group_active.append(np.full(el.n_elements, installed))
+        for i, (axis, length, dofs) in enumerate(p.bar_data):
+            locked = self._bar_reference.get(i) is not None
+            k = p.bars[i].EA / length
+            if locked:
+                force = p.bars[i].prestress + k * (self._bar_extension(i, u) - self._bar_reference[i])
+                f_int += assemble_vector(p.n_dof, dofs[None, :], self._bar_vector(axis, len(dofs))[None, :] * force)
+            b = self._bar_vector(axis, len(dofs))
+            group_matrices.append((k * np.outer(b, b))[None])
+            group_active.append(np.array([locked]))
+
         if tangent:
             # the matrix itself is formed only if this iteration factorises it
             def matrix():
-                return p.pattern.assemble(ce.stiffness(tangents), active)
+                return p.system_pattern.assemble(ce.stiffness(tangents), active, group_matrices, group_active)
             return f_int, matrix, not yielding
         return f_int, None, new_state
 
+    # ------------------------------------------------------------- structures
+    @staticmethod
+    def _bar_vector(axis: np.ndarray, n: int) -> np.ndarray:
+        """d(extension)/d(dofs) of a bar: -axis at a, +axis at b."""
+        return np.concatenate([-axis, axis]) if n == 6 else -axis
+
+    def _bar_extension(self, i: int, u: np.ndarray) -> float:
+        axis, _, dofs = self.p.bar_data[i]
+        return float(self._bar_vector(axis, len(dofs)) @ u[dofs])
+
+    def _structure_loads(self) -> np.ndarray:
+        """Self weight of installed plates, and the jack forces of bars being stressed."""
+        p = self.p
+        f = np.zeros(p.n_dof)
+        for i in self._plate_reference:
+            el = p.plate_elements[i]
+            if el.section.weight:
+                f += assemble_vector(p.n_dof, p.plate_dofs[i], el.self_weight())
+        for i, ref in self._bar_reference.items():
+            if ref is None and p.bars[i].prestress:
+                axis, _, dofs = p.bar_data[i]
+                # the jack pulls the ends together: minus the bar's internal force
+                f -= assemble_vector(p.n_dof, dofs[None, :],
+                                     self._bar_vector(axis, len(dofs))[None, :] * p.bars[i].prestress)
+        return f
+
+    def _structure_forces(self, u: np.ndarray):
+        p = self.p
+        plates = {}
+        for i, ref in self._plate_reference.items():
+            plates[p.plates[i].name] = p.plate_elements[i].resultants((u - ref)[p.plate_dofs[i]])
+        bars = {}
+        for i, ref in self._bar_reference.items():
+            k = p.bars[i].EA / p.bar_data[i][1]
+            extension = self._bar_extension(i, u)
+            bars[p.bars[i].name] = p.bars[i].prestress + (0.0 if ref is None else k * (extension - ref))
+        return plates, bars
+
+    def _nodal(self, u: np.ndarray) -> np.ndarray:
+        """The translations of a system vector, (n_nodes, 3)."""
+        return u[:self._n3].reshape(-1, 3)
+
     def _orphan_dofs(self, active: np.ndarray) -> np.ndarray:
         """Dofs of nodes that belong to no active element: held so the system stays regular."""
-        live = np.zeros(self.p.mesh.n_nodes, bool)
-        live[self.p.mesh.elements[active].ravel()] = True
+        p = self.p
+        live = np.zeros(p.mesh.n_nodes, bool)
+        live[p.mesh.elements[active].ravel()] = True
         dead = np.nonzero(~live)[0]
-        return (3 * dead[:, None] + np.arange(3)).ravel()
+        held = [(3 * dead[:, None] + np.arange(3)).ravel()]
+        # rotations belong to plates; until one is installed they are held
+        rotating = np.zeros(p.n_dof, bool)
+        for i in self._plate_reference:
+            rotating[p.plate_dofs[i][:, 3::6].ravel()] = True
+            rotating[p.plate_dofs[i][:, 4::6].ravel()] = True
+            rotating[p.plate_dofs[i][:, 5::6].ravel()] = True
+        held.append(np.nonzero(~rotating[self._n3:])[0] + self._n3)
+        return np.concatenate(held)

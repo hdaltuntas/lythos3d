@@ -255,14 +255,63 @@ class SparsityPattern:
                + m * pr[:, :, None, :, None] + j)
         self.scatter = pos.reshape(ne, nen * m, nen * m).astype(index_type)
 
-    def assemble(self, Ke: np.ndarray, active: np.ndarray | None = None) -> sp.csr_matrix:
+    def assemble(self, Ke: np.ndarray, active: np.ndarray | None = None,
+                 group_matrices=(), group_active=()) -> sp.csr_matrix:
         """Global matrix from element matrices ``Ke`` (ne, 30, 30).
+
+        (The group arguments exist for :class:`CombinedPattern`'s interface;
+        a plain pattern has no groups.)
 
         ``active`` optionally masks elements out, as excavation will.
         """
+        if len(group_matrices):
+            raise ValueError("this pattern has no structural groups")
         scatter = self.scatter if active is None else self.scatter[active]
         Ke = Ke if active is None else Ke[active]
         data = np.bincount(scatter.ravel(), weights=Ke.ravel(), minlength=self.nnz)
+        return sp.csr_matrix((data, self.indices, self.indptr), shape=(self.n_dof, self.n_dof))
+
+
+class CombinedPattern:
+    """A continuum pattern extended by structural elements with their own dofs.
+
+    ``groups`` are dof maps (n_e, m) of further element sets - plates,
+    bars - over a system of ``n_dof`` equations, of which the continuum's
+    own come first.  The combined structure is the union of both, found
+    once; the continuum's scatter indices are remapped into it, so forming
+    the matrix remains a single ``bincount`` and its structure never changes,
+    which is what lets PARDISO reuse its symbolic factorisation.
+    """
+
+    def __init__(self, continuum: SparsityPattern, groups: list[np.ndarray], n_dof: int):
+        self.n_dof = n_dof
+        c_rows = np.repeat(np.arange(continuum.n_dof, dtype=np.int64), np.diff(continuum.indptr))
+        c_keys = c_rows * n_dof + continuum.indices.astype(np.int64)
+        extra = [(np.repeat(g, g.shape[1], axis=1) * n_dof + np.tile(g, (1, g.shape[1]))).astype(np.int64)
+                 for g in groups]
+        keys = np.union1d(c_keys, np.concatenate([e.ravel() for e in extra])) if extra else c_keys
+        self.nnz = len(keys)
+        index_type = np.int32 if self.nnz < 2**31 else np.int64
+        rows = keys // n_dof
+        self.indices = (keys % n_dof).astype(index_type)
+        self.indptr = np.concatenate([[0], np.cumsum(np.bincount(rows, minlength=n_dof))]).astype(index_type)
+        remap = np.searchsorted(keys, c_keys)
+        self.scatter = remap[continuum.scatter].astype(index_type)
+        self.group_scatter = [np.searchsorted(keys, e).reshape(len(e), g.shape[1], g.shape[1]).astype(index_type)
+                              for e, g in zip(extra, groups)]
+
+    def assemble(self, Ke: np.ndarray, active: np.ndarray | None = None,
+                 group_matrices=(), group_active=()) -> sp.csr_matrix:
+        """Global matrix from continuum matrices ``Ke`` and, per group, its element
+        matrices and an optional mask of the elements taking part."""
+        parts_i = [self.scatter if active is None else self.scatter[active]]
+        parts_w = [Ke if active is None else Ke[active]]
+        for k, M in enumerate(group_matrices):
+            mask = group_active[k] if k < len(group_active) else None
+            parts_i.append(self.group_scatter[k] if mask is None else self.group_scatter[k][mask])
+            parts_w.append(M if mask is None else M[mask])
+        data = np.bincount(np.concatenate([p.ravel() for p in parts_i]),
+                           weights=np.concatenate([w.ravel() for w in parts_w]), minlength=self.nnz)
         return sp.csr_matrix((data, self.indices, self.indptr), shape=(self.n_dof, self.n_dof))
 
 

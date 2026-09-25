@@ -53,6 +53,27 @@ class Mesh:
         _, inverse, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
         return faces[counts[inverse.ravel()] == 1]
 
+    def faces_in_box(self, lo, hi, tol: float = 1e-9) -> np.ndarray:
+        """Every element face (interior or boundary) whose corners all lie in the box.
+
+        A box of zero thickness in one direction is a rectangle in a plane,
+        which is how a wall is found.  Each face is returned once, as a 6-node
+        triangle (corners, then mid-edges ab, bc, ca).
+        """
+        lo, hi = np.asarray(lo, float), np.asarray(hi, float)
+        faces = self.elements[:, np.array([(0, 1, 2, 4, 5, 6), (0, 1, 3, 4, 8, 7),
+                                           (1, 2, 3, 5, 9, 8), (0, 2, 3, 6, 9, 7)])].reshape(-1, 6)
+        corners = self.nodes[faces[:, :3]]
+        inside = np.all((corners >= lo - tol) & (corners <= hi + tol), axis=(1, 2))
+        faces = faces[inside]
+        _, first = np.unique(np.sort(faces[:, :3], axis=1), axis=0, return_index=True)
+        return faces[np.sort(first)]
+
+    def nearest_node(self, point, corners_only: bool = True) -> int:
+        candidates = np.unique(self.elements[:, :4]) if corners_only else np.arange(self.n_nodes)
+        d = np.linalg.norm(self.nodes[candidates] - np.asarray(point, float), axis=1)
+        return int(candidates[np.argmin(d)])
+
     def faces_on_plane(self, axis: int, value: float, tol: float = 1e-9) -> np.ndarray:
         """Boundary faces lying in the plane ``x[axis] == value``."""
         faces = self.boundary_faces()

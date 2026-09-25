@@ -42,6 +42,12 @@ whose failure is bounded at its ends. Lythos 3D is for those.
 - **Staged construction**: K0 or gravity initial stresses, excavation by
   removing volumes of ground in lifts, surface loads per stage.
 - **Factor of safety** by strength reduction.
+- **Walls and rafts**: 6-node flat shells sharing their nodes with the soil,
+  specified by `E`, `ν` and thickness, or by `EA` and `EI` per metre.
+  Installed at a stage, stress-free in the ground as it has deformed.
+  Reports membrane forces, moments and shears.
+- **Anchors and struts**: bars between two nodes or to a fixed point,
+  stressed to their lock-off load in the stage that installs them.
 - **ParaView output** (`.vtu`): displacements, smoothed stresses and plastic
   strain on quadratic cells, stage by stage, with excavated ground left out.
 
@@ -163,6 +169,13 @@ Every row is a test in `tests/`:
 | Level strata and pit lifts through gmsh | `area × thickness` | exact |
 | Same site meshed twice | identical mesh | identical |
 | JSON site description | round trip | lossless |
+| Plate element | 6 rigid body modes, no spurious ones | 6 |
+| Plate membrane patch test, tilted | constant forces | exact |
+| Cantilever strip, L/t = 10 to 1000 | `PL³/3EI + PL/κGA` | within 0.3% |
+| Simply supported square plate (Navier) | `0.00406 q a⁴/D` | within 1% (12 × 12), 3% (4 × 4, t/a = 0.005) |
+| Raft on a restrained column | `(q + w) H / M`, no moment | exact |
+| Anchor lock-off | `P₀`, then `P₀ + EA/L Δ` | exact |
+| Cantilever wall, plane-strain slice (`pytest -m slow`) | 2D Lythos: 9.83 kNm/m, 1.22 mm | 9.65 kNm/m, 1.21 mm |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
 0.5%, and falls with refinement the same way:
@@ -207,9 +220,9 @@ which it sums. So a repeated run can land one bracket lower, for example
    meshed by gmsh, site files.~~
    Still to come here: DXF plan import (with the interface), and ground loads
    on an irregular surface.
-4. **Structures**: plates for diaphragm and pile walls, embedded beams for
-   piles, anchors, interfaces. In 3D a pile row no longer has to be smeared
-   into a plate.
+4. **Structures**: ~~plates for walls and rafts, anchors and struts~~.
+   Still to come here: soil–wall interfaces (wall friction), embedded
+   beams for piles, walls drawn in plan for gmsh sites.
 5. **Interface**: a three.js viewer for contours and cut planes, a plan
    editor, DXF plan import and an HTML report.
 

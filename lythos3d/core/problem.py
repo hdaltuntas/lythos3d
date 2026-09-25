@@ -14,9 +14,10 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .analysis import SurfaceLoad, box_fixities
-from .assembly import SparsityPattern, assemble_vector
+from .assembly import CombinedPattern, SparsityPattern, assemble_vector
 from .elements import ContinuumElements, face_traction
 from .mesh import Mesh
+from .structures import Bar, Plate, PlateElements
 
 INITIAL = "initial"
 PLASTIC = "plastic"
@@ -28,9 +29,11 @@ class Stage:
     """One step of the construction sequence.
 
     ``excavate`` and ``construct`` name element groups removed or added at
-    this stage; both are cumulative, so a group dug out stays out.  ``loads``
-    are the surface loads acting during this stage - list a load again in a
-    later stage to keep it on.
+    this stage; both are cumulative, so a group dug out stays out.
+    ``install`` names plates and bars built at this stage: a plate starts
+    free of force in the ground as it has deformed so far, and a bar is
+    stressed to its lock-off load.  ``loads`` are the surface loads acting
+    during this stage - list a load again in a later stage to keep it on.
 
     ``kind`` is ``"initial"`` for the initial stresses (by ``initial_stress``:
     ``"k0"`` or ``"gravity"``), ``"plastic"`` for an ordinary construction
@@ -42,6 +45,7 @@ class Stage:
     increments: int = 10
     excavate: tuple[str, ...] = ()
     construct: tuple[str, ...] = ()
+    install: tuple[str, ...] = ()
     loads: tuple[SurfaceLoad, ...] = ()
     reset_displacements: bool = True
     initial_stress: str = "k0"
@@ -55,6 +59,7 @@ class Stage:
             raise ValueError(f"stage {self.name!r}: initial_stress must be 'k0' or 'gravity'")
         self.excavate = tuple(self.excavate)
         self.construct = tuple(self.construct)
+        self.install = tuple(self.install)
         self.loads = tuple(self.loads)
 
 
@@ -69,6 +74,9 @@ class Problem:
     returning the effective overburden pressure there (compression positive)
     for the K0 procedure; without it only gravity loading can set up the
     initial stresses.
+
+    ``plates`` and ``bars`` are the structures; they do nothing until a stage
+    installs them.
     """
 
     mesh: Mesh
@@ -77,6 +85,8 @@ class Problem:
     groups: dict[str, np.ndarray] = field(default_factory=dict)
     absent: tuple[str, ...] = ()
     vertical_stress: object = None
+    plates: list[Plate] = field(default_factory=list)
+    bars: list[Bar] = field(default_factory=list)
 
     def __post_init__(self):
         if isinstance(self.materials, (list, tuple)):
@@ -98,12 +108,61 @@ class Problem:
         self.continuum = ContinuumElements(self.mesh.nodes, self.mesh.elements)
         self.pattern = SparsityPattern(self.mesh.elements, self.mesh.n_nodes)
         self.dofs = self.continuum.dofs()
-        self.n_dof = 3 * self.mesh.n_nodes
+        self.n_translation = 3 * self.mesh.n_nodes
+        self._setup_structures()
         ngp = self.continuum.n_gauss
         self._gauss_of_region = {
             r: (np.nonzero(self.mesh.region == r)[0][:, None] * ngp + np.arange(ngp)).ravel()
             for r in self.materials
         }
+
+    def _setup_structures(self) -> None:
+        """Rotation dofs for plate nodes, element data and the combined pattern."""
+        names = [p.name for p in self.plates] + [b.name for b in self.bars]
+        if len(set(names)) != len(names):
+            raise ValueError("structure names must be unique")
+        clash = set(names) & set(self.groups)
+        if clash:
+            raise ValueError(f"structure and element group share the name(s) {sorted(clash)}")
+        plate_nodes = np.unique(np.concatenate([p.faces.ravel() for p in self.plates])) \
+            if self.plates else np.zeros(0, dtype=np.int64)
+        self.rotation_of = np.full(self.mesh.n_nodes, -1, dtype=np.int64)
+        self.rotation_of[plate_nodes] = self.n_translation + 3 * np.arange(len(plate_nodes))
+        self.n_dof = self.n_translation + 3 * len(plate_nodes)
+
+        self.plate_elements, self.plate_dofs = [], []
+        for plate in self.plates:
+            faces = np.asarray(plate.faces, dtype=np.int64)
+            el = PlateElements(self.mesh.nodes, faces, plate.section)
+            d = np.empty((len(faces), 36), dtype=np.int64)
+            for k in range(3):
+                d[:, k::6] = 3 * faces + k
+                d[:, 3 + k::6] = self.rotation_of[faces] + k
+            self.plate_elements.append(el)
+            self.plate_dofs.append(d)
+
+        # bars: unit vector a -> b, length, and dofs (the fixed end has none)
+        self.bar_data = []
+        x = self.mesh.nodes
+        for bar in self.bars:
+            end = x[bar.b] if bar.b is not None else np.asarray(bar.fixed_point, dtype=float)
+            if bar.b is None and bar.fixed_point is None:
+                raise ValueError(f"bar {bar.name!r} needs a second node or a fixed point")
+            axis = end - x[bar.a]
+            length = float(np.linalg.norm(axis))
+            if length <= 0:
+                raise ValueError(f"bar {bar.name!r} has no length")
+            dofs = [3 * bar.a + k for k in range(3)]
+            if bar.b is not None:
+                dofs += [3 * bar.b + k for k in range(3)]
+            self.bar_data.append((axis / length, length, np.array(dofs, dtype=np.int64)))
+
+        groups = list(self.plate_dofs) + [d[None, :] for _, _, d in self.bar_data]
+        self.system_pattern = (CombinedPattern(self.pattern, groups, self.n_dof)
+                               if groups else self.pattern)
+
+    def structure_names(self) -> set[str]:
+        return {p.name for p in self.plates} | {b.name for b in self.bars}
 
     @property
     def n_points(self) -> int:
@@ -120,6 +179,9 @@ class Problem:
         for name in (*stage.excavate, *stage.construct):
             if name not in self.groups:
                 raise ValueError(f"stage {stage.name!r} refers to unknown group {name!r}")
+        for name in stage.install:
+            if name not in self.structure_names():
+                raise ValueError(f"stage {stage.name!r} installs unknown structure {name!r}")
 
     # ------------------------------------------------------------------ loads
     def gravity(self, active: np.ndarray) -> np.ndarray:

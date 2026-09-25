@@ -41,6 +41,36 @@ class Volume:
 
 
 @dataclass
+class Wall:
+    """A plate on the rectangle from ``lo`` to ``hi``, flat in one coordinate direction."""
+
+    name: str
+    lo: tuple[float, float, float]
+    hi: tuple[float, float, float]
+    section: object
+
+    def __post_init__(self):
+        flat = [i for i in range(3) if abs(self.hi[i] - self.lo[i]) < 1e-12]
+        if len(flat) != 1:
+            raise ValueError(f"wall {self.name!r} must be a rectangle flat in exactly one direction")
+
+
+@dataclass
+class Anchor:
+    """A bar from point ``a`` to point ``b``; with ``fixed_end`` the end at ``b`` is held fixed.
+
+    ``EA`` (kN) is per anchor and ``prestress`` (kN) its lock-off load.
+    """
+
+    name: str
+    a: tuple[float, float, float]
+    b: tuple[float, float, float]
+    EA: float
+    prestress: float = 0.0
+    fixed_end: bool = False
+
+
+@dataclass
 class Model:
     """Horizontal strata in a box ``x`` by ``y`` down to ``bottom``.
 
@@ -58,6 +88,8 @@ class Model:
     stages: list[Stage] = field(default_factory=list)
     mesh_size: float = 2.0
     vertical_mesh_size: float | None = None
+    walls: list[Wall] = field(default_factory=list)
+    anchors: list[Anchor] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.strata:
@@ -95,9 +127,12 @@ class Model:
         (x0, x1), (y0, y1) = self.x, self.y
         z0, z1 = self.bottom, self.surface
         h, hz = self.mesh_size, self.vertical_mesh_size or self.mesh_size
-        bx = [c for v in self.volumes for c in (v.lo[0], v.hi[0])]
-        by = [c for v in self.volumes for c in (v.lo[1], v.hi[1])]
-        bz = [s.top for s in self.strata] + [c for v in self.volumes for c in (v.lo[2], v.hi[2])]
+        boxes = [(v.lo, v.hi) for v in self.volumes] + [(w.lo, w.hi) for w in self.walls]
+        points = [a.a for a in self.anchors] + [a.b for a in self.anchors if not a.fixed_end]
+        bx = [c for lo, hi in boxes for c in (lo[0], hi[0])] + [pt[0] for pt in points]
+        by = [c for lo, hi in boxes for c in (lo[1], hi[1])] + [pt[1] for pt in points]
+        bz = ([s.top for s in self.strata] + [c for lo, hi in boxes for c in (lo[2], hi[2])]
+              + [pt[2] for pt in points])
         mesh = box_mesh(graded(x0, x1, h, bx), graded(y0, y1, h, by), graded(z0, z1, hz, bz))
         centroids = mesh.centroids()
         mesh.region = self.stratum_of(centroids)
@@ -107,8 +142,28 @@ class Model:
             if not mask.any():
                 raise ValueError(f"volume {v.name!r} contains no part of the model")
             groups[v.name] = mask
+        from .structures import Bar, Plate
+
+        plates = []
+        for w in self.walls:
+            faces = mesh.faces_in_box(w.lo, w.hi)
+            if len(faces) == 0:
+                raise ValueError(f"wall {w.name!r} lies outside the model")
+            plates.append(Plate(w.name, faces, w.section))
+        bars = []
+        for a in self.anchors:
+            na = mesh.nearest_node(a.a)
+            if np.linalg.norm(mesh.nodes[na] - np.asarray(a.a)) > 1e-6:
+                raise ValueError(f"anchor {a.name!r} starts outside the model")
+            if a.fixed_end:
+                bars.append(Bar(a.name, na, None, a.EA, a.prestress, fixed_point=tuple(a.b)))
+            else:
+                nb = mesh.nearest_node(a.b)
+                if np.linalg.norm(mesh.nodes[nb] - np.asarray(a.b)) > 1e-6:
+                    raise ValueError(f"anchor {a.name!r} ends outside the model")
+                bars.append(Bar(a.name, na, nb, a.EA, a.prestress))
         return Problem(mesh, {i: s.material for i, s in enumerate(self.strata)},
-                       groups=groups, vertical_stress=self.overburden)
+                       groups=groups, vertical_stress=self.overburden, plates=plates, bars=bars)
 
     def run(self, verbose: bool = False, backend: str = "auto", tolerance: float = 1e-3):
         """Build, then analyse every stage: ``(problem, list of StageResult)``."""

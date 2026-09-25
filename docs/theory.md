@@ -245,3 +245,68 @@ trial converges depends on how its iterations are spent: modified Newton
 converged trials that full Newton gave up on, and moved the benchmark slope
 from 1.438 to 1.459 with no change in the physics. The factor of safety is
 kept on the path it was verified on.
+
+## Plates
+
+Walls and rafts are 6-node flat shells on faces of the 10-node tetrahedra,
+so they share nodes with the soil. Each node keeps its three translations
+and gains three rotations about the global axes, numbered after all the
+translations. In the element's own frame:
+
+- **Membrane:** plane stress, `N = D_m ε_m`.
+- **Bending:** Reissner–Mindlin, `u(z) = u + zθ_y`, `v(z) = v − zθ_x`,
+  `κ = [∂θ_y/∂x, −∂θ_x/∂y, ∂θ_y/∂y − ∂θ_x/∂x]`.
+- **Transverse shear:** `γ = [∂w/∂x + θ_y, ∂w/∂y − θ_x]`, with κ = 5/6.
+- **Drilling:** the rotation about the normal is tied to the membrane's
+  in-plane rotation `(∂v/∂x − ∂u/∂y)/2` by a penalty of `10⁻³ G t`
+  (Hughes–Brezzi). Tying it rather than springing it to zero leaves a rigid
+  rotation free of energy.
+
+**Integration and spurious modes.** Membrane and bending are integrated by
+the 3-point rule, which is exact on a flat element. Shear and drilling are
+quartic and need the 6-point rule. Under the 3-point rule the drilling term
+loses rank: the 18 in-plane dofs, less 3 rigid motions, need 15 independent
+modes, while 3 points give the membrane at most 9 and drilling at most 3. The
+element then had nine zero-energy modes instead of six. With exact
+integration it has exactly six, which is tested.
+
+**Shear locking.** The shear stiffness is scaled by `t²/(t² + a h²)`
+(Lyly, Stenberg & Vihinen), with `h` the longest edge. `a = 0.03` is
+calibrated on a simply supported square plate with `t/a = 0.005`:
+
+| `a` | 4 × 4 mesh | 12 × 12 mesh |
+| --- | --- | --- |
+| 0 | −19% (locked) | −2% |
+| 0.03 | −3% | +0.5% |
+| 0.1 | +10% | +3% |
+
+Cantilever strips from `L/t = 10` to `1000` are within 0.3% of beam theory.
+
+**In the ground.** A plate installed at a stage stores the displacement at
+that moment, and its forces follow `K (u − u_installed)`: it is built
+stress-free into ground that has already moved. Until then its rotations
+are held. The system matrix is the union of the soil pattern and the plates'
+and bars' dof pairs, found once (`CombinedPattern`). Assembly stays a single
+`bincount`, and PARDISO's symbolic factorisation is still reused.
+
+**Against 2D.** A 3D slice held in plane strain with a cantilever wall
+retaining a 3 m cut, compared with 2D Lythos given the plane-strain plate
+stiffness `E t³/12(1 − ν²)`:
+
+| Element size | Max moment 2D / 3D (kNm/m) | Top displacement 2D / 3D (mm) |
+| --- | --- | --- |
+| 1.0 m | 9.04 / 7.92 | 1.15 / 1.09 |
+| 0.5 m | 9.83 / 9.65 | 1.22 / 1.21 |
+| 0.25 m | 10.62 / 10.40 | 1.32 / 1.28 |
+
+The coarse 3D moment is low because it is read at Gauss points inside the
+elements and misses the peak. From 0.5 m the two agree within 2% in moment
+and 3% in displacement, and refine together.
+
+## Anchors and struts
+
+A bar joins two mesh nodes, or a node and a fixed point. In the stage that
+installs it, it is a pair of jack forces `P₀` pulling its ends together. At
+the end of that stage it is locked off, and from then on it carries
+`N = P₀ + EA/L · (extension − extension at lock-off)`, with stiffness
+`EA/L e eᵀ`. A strut is a bar with `P₀ = 0`.
