@@ -7,9 +7,10 @@ Plane strain is the right idealisation for a long slope or a long wall, and the
 wrong one for the corner of an excavation pit, a pile group, a raft, or a slope
 whose failure is bounded at its ends. Lythos 3D is for those.
 
-> **Status: early development.** What exists today is the linear elastic core,
-> verified against closed-form solutions. Staged construction, Mohr-Coulomb
-> plasticity and strength reduction come next; see the [roadmap](#roadmap).
+> **Status: early development.** Mohr-Coulomb plasticity, staged excavation
+> and strength reduction work on layered ground in a box, verified against
+> closed-form solutions and against 2D Lythos. General geometry and structures
+> come next; see the [roadmap](#roadmap).
 
 ## What works now
 
@@ -25,8 +26,14 @@ whose failure is bounded at its ends. Lythos 3D is for those.
 - **PARDISO**: Intel's parallel sparse direct solver, through `pypardiso`.
   SciPy's SuperLU cannot factorise a 3D model of useful
   size in reasonable time or memory.
-- **ParaView output** (`.vtu`): displacements and smoothed stresses on
-  quadratic cells.
+- **Mohr-Coulomb** with a tension cut-off and non-associated flow: the 2D
+  exact return mapping in principal stresses, carried into six stress
+  components with its consistent tangent.
+- **Staged construction**: K0 or gravity initial stresses, excavation by
+  removing volumes of ground in lifts, surface loads per stage.
+- **Factor of safety** by strength reduction.
+- **ParaView output** (`.vtu`): displacements, smoothed stresses and plastic
+  strain on quadratic cells, stage by stage, with excavated ground left out.
 
 ## Installing and trying it
 
@@ -37,6 +44,8 @@ pip install -e ".[dev]"
 
 lythos3d info                    # versions, and which linear solvers are available
 lythos3d demo -o out             # a footing on sand over clay -> out/footing.vtu
+lythos3d pit -o pit              # a square pit dug in two lifts, then its factor of safety
+lythos3d pit --trench -o trench  # the same section as a long trench, in plane strain
 pytest
 ```
 
@@ -52,25 +61,37 @@ settlement under the centre of the footing: 14.8 mm
 
 ## From a script
 
+A square pit, a quarter of it by symmetry, dug in two lifts:
+
 ```python
-import numpy as np
-from lythos3d.core.analysis import SurfaceLoad, linear_static
-from lythos3d.core.materials import LinearElastic
-from lythos3d.core.mesh import box_mesh, graded
-from lythos3d.io.vtu import write_result
+from lythos3d.core.materials import MohrCoulomb
+from lythos3d.core.model import Model, Stratum, Volume
+from lythos3d.core.problem import Stage
+from lythos3d.io.vtu import write_stage
 
-sand = LinearElastic("sand", E=4.0e4, nu=0.3, gamma=18.0)
-clay = LinearElastic("clay", E=1.2e4, nu=0.35, gamma=19.0)
+clay = MohrCoulomb("sandy clay", E=2.5e4, nu=0.3, gamma=19.0, c=12.0, phi=26.0)
+stiff = MohrCoulomb("stiff clay", E=6.0e4, nu=0.3, gamma=20.0, c=25.0, phi=24.0)
 
-mesh = box_mesh(graded(-15, 15, 1.0), graded(-15, 15, 1.0),
-                graded(-20, 0, 1.0, breaks=[-4.0]))        # a grid line at the layer boundary
-mesh.assign_regions(lambda c: np.where(c[:, 2] > -4.0, 0, 1))
-
-footing = SurfaceLoad("z", 0.0, (0, 0, -150.0),
-                      where=lambda c: (abs(c[:, 0]) < 1.5) & (abs(c[:, 1]) < 1.5))
-result = linear_static(mesh, [sand, clay], gravity=False, loads=[footing])
-write_result("footing.vtu", result)
+model = Model(
+    name="pit", x=(0, 13), y=(0, 13), bottom=-10,
+    strata=[Stratum("sandy clay", clay, 0.0), Stratum("stiff clay", stiff, -4.0)],
+    volumes=[Volume("lift 1", (0, 0, -1.5), (4, 4, 0)),
+             Volume("lift 2", (0, 0, -3.0), (4, 4, -1.5))],
+    stages=[Stage("initial", kind="initial", initial_stress="k0"),
+            Stage("dig to -1.5", excavate=("lift 1",)),
+            Stage("dig to -3.0", excavate=("lift 2",)),
+            Stage("factor of safety", kind="ssr")],
+    mesh_size=1.0,
+)
+problem, results = model.run(verbose=True)
+print(results[-1].factor_of_safety)
+for k, r in enumerate(results):
+    write_stage(f"pit_{k}.vtu", problem, r)
 ```
+
+The x = 0 and y = 0 planes are on rollers, as are the far sides, so they act
+as planes of symmetry. For a single load case on elastic ground,
+`lythos3d.core.analysis.linear_static` does without stages.
 
 Units are kN, m and kPa, as in Lythos. `z` points up, and stresses are
 tension positive, stored in the order `[xx, yy, zz, xy, yz, zx]`.
@@ -107,15 +128,34 @@ Every row is a test in `tests/`:
 | Cantilever tip deflection (2 elements through the depth) | `PL³/3EI + PL/κGA` | within 1% |
 | Footing symmetry | x ↔ y swap | exact |
 | Singular (unrestrained) model | must be refused | refused |
+| Mohr-Coulomb triaxial strength | `σ1 = σ3 Kp + 2c√Kp` | within 1e-6 |
+| Consistent tangent | finite-difference derivative | within 1e-9 E |
+| K0 procedure, layered ground | `σh = K0 σv`, no imbalance | exact, zero iterations |
+| Excavating a layer | heave `γ h H / M` | exact |
+| 2:1 slope as a plane-strain slice (`pytest -m slow`) | 2D Lythos: 1.430 | 1.438 |
+
+At the same element sizes the plane-strain slice follows 2D Lythos to within
+0.5%, and falls with refinement the same way:
+
+| Element size | 2D Lythos | Lythos 3D slice |
+| --- | --- | --- |
+| 2.5 m | 1.430 | 1.438 |
+| 2.0 m | 1.416 | 1.423 |
+
+A strength reduction factor is found to within its bisection bracket
+(0.007). Near failure, whether a single trial converges depends on
+round-off, and PARDISO's parallel factorisation does not fix the order in
+which it sums. So a repeated run can land one bracket lower, for example
+1.416 instead of 1.423.
 
 ## Roadmap
 
 1. ~~**Core**: quadratic tetrahedra, elastic solution, PARDISO, ParaView output.~~
-2. **Plasticity and staging**: Mohr-Coulomb in six stress components (the
-   2D return mapping already works in principal stresses), K0 and gravity
-   initial stresses, excavation by element removal, strength reduction. The
-   check: a 3D slice held in plane strain must give Lythos's 2:1 slope factor
-   of safety of 1.381.
+2. ~~**Plasticity and staging**: Mohr-Coulomb in six stress components, K0
+   and gravity initial stresses, excavation in lifts, strength reduction,
+   checked against 2D Lythos in plane strain.~~
+   Still to come here: groundwater and pore pressure, and constructing
+   volumes (fill) as well as removing them.
 3. **Geometry**: soil layers from boreholes, excavation pits and structures
    drawn in plan with depths, meshed by gmsh.
 4. **Structures**: plates for diaphragm and pile walls, embedded beams for
