@@ -80,7 +80,7 @@ def _pit(args) -> int:
         if result.srf is not None:
             line += f", factor of safety {result.srf:.2f}"
         elif k:
-            line += f", max displacement {1000 * result.max_displacement:.1f} mm"
+            line += f", moved up to {1000 * result.max_displacement:.1f} mm in this stage"
         print(f"{line}  ({result.seconds:.0f} s) -> {path}", flush=True)
         if not result.converged:
             print(f"    {result.message}")

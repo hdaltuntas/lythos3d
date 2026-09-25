@@ -44,8 +44,8 @@ pip install -e ".[dev]"
 
 lythos3d info                    # versions, and which linear solvers are available
 lythos3d demo -o out             # a footing on sand over clay -> out/footing.vtu
-lythos3d pit -o pit              # a square pit dug in two lifts, then its factor of safety
-lythos3d pit --trench -o trench  # the same section as a long trench, in plane strain
+lythos3d pit -o pit              # a square pit dug in two lifts, then its factor of safety (~6 min)
+lythos3d pit --trench -o trench  # the same section as a long trench, in plane strain (~1 min)
 pytest
 ```
 
@@ -81,10 +81,10 @@ model = Model(
             Stage("dig to -1.5", excavate=("lift 1",)),
             Stage("dig to -3.0", excavate=("lift 2",)),
             Stage("factor of safety", kind="ssr")],
-    mesh_size=1.0,
+    mesh_size=1.5,
 )
 problem, results = model.run(verbose=True)
-print(results[-1].factor_of_safety)
+print(results[-1].factor_of_safety)               # 1.32; the same section as a trench: 1.11
 for k, r in enumerate(results):
     write_stage(f"pit_{k}.vtu", problem, r)
 ```
