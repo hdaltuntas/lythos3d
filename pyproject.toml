@@ -1,0 +1,53 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lythos3d"
+version = "0.0.1"
+description = "3D finite element analysis for geotechnical engineering: the three-dimensional counterpart of Lythos."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Hasan Deniz Altuntaş", email = "lythosfea@gmail.com" }]
+keywords = [
+    "geotechnical", "finite element", "fem", "3d", "excavation", "foundation",
+    "pile", "mohr-coulomb", "soil mechanics", "civil engineering",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+# PARDISO is what makes a 3D model of useful size solvable; SciPy's SuperLU
+# runs out of memory long before.  It ships only for x86-64, so elsewhere
+# (Apple silicon, ARM Linux) Lythos 3D falls back to SuperLU and says so.
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "pypardiso>=0.4.6; platform_machine == 'x86_64' or platform_machine == 'AMD64'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0", "ruff>=0.4"]
+
+[project.urls]
+Homepage = "https://github.com/hdaltuntas/lythos3d"
+Repository = "https://github.com/hdaltuntas/lythos3d"
+"Lythos 2D" = "https://github.com/hdaltuntas/lythos"
+
+[project.scripts]
+lythos3d = "lythos3d.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["lythos3d*"]
+
+[tool.pytest.ini_options]
+markers = ["slow: analyses that take more than a few seconds"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110

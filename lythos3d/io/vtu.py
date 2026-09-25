@@ -1,0 +1,108 @@
+"""VTK unstructured grid (.vtu) output, for viewing results in ParaView.
+
+Arrays are written in VTK's inline binary encoding (base64 with a 64-bit
+length header), which ParaView reads directly and which is several times
+smaller than ASCII.  Elements go out as VTK quadratic tetrahedra (cell type
+24), whose node order the elements already follow.
+"""
+
+from __future__ import annotations
+
+import base64
+import os
+
+import numpy as np
+
+VTK_QUADRATIC_TETRA = 24
+
+_TYPES = {
+    np.dtype(np.float64): "Float64",
+    np.dtype(np.float32): "Float32",
+    np.dtype(np.int64): "Int64",
+    np.dtype(np.int32): "Int32",
+    np.dtype(np.uint8): "UInt8",
+}
+
+#: names of the six Voigt components, in storage order
+VOIGT = ("xx", "yy", "zz", "xy", "yz", "zx")
+
+
+def _array(name: str, data: np.ndarray, indent: str) -> str:
+    data = np.ascontiguousarray(data)
+    if data.dtype not in _TYPES:
+        data = data.astype(np.float64)
+    ncomp = 1 if data.ndim == 1 else data.shape[1]
+    raw = data.tobytes()
+    blob = base64.b64encode(np.uint64(len(raw)).tobytes() + raw).decode("ascii")
+    extra = f' NumberOfComponents="{ncomp}"' if ncomp > 1 else ""
+    if data.ndim == 2 and ncomp == 6:
+        extra += "".join(f' ComponentName{i}="{c}"' for i, c in enumerate(VOIGT))
+    return (f'{indent}<DataArray type="{_TYPES[data.dtype]}" Name="{name}"{extra} '
+            f'format="binary">{blob}</DataArray>\n')
+
+
+def write_vtu(path: str | os.PathLike, nodes: np.ndarray, elements: np.ndarray,
+              point_data: dict | None = None, cell_data: dict | None = None) -> str:
+    """Write a mesh of 10-node tetrahedra and its fields to ``path``."""
+    nodes = np.asarray(nodes, dtype=np.float64)
+    elements = np.asarray(elements, dtype=np.int64)
+    ne = len(elements)
+    parts = [
+        '<?xml version="1.0"?>\n',
+        '<VTKFile type="UnstructuredGrid" version="1.0" byte_order="LittleEndian" '
+        'header_type="UInt64">\n',
+        "  <UnstructuredGrid>\n",
+        f'    <Piece NumberOfPoints="{len(nodes)}" NumberOfCells="{ne}">\n',
+    ]
+    for tag, data in (("PointData", point_data), ("CellData", cell_data)):
+        if data:
+            parts.append(f"      <{tag}>\n")
+            parts += [_array(k, np.asarray(v), "        ") for k, v in data.items()]
+            parts.append(f"      </{tag}>\n")
+    parts += [
+        "      <Points>\n",
+        _array("Points", nodes, "        "),
+        "      </Points>\n",
+        "      <Cells>\n",
+        _array("connectivity", elements.ravel(), "        "),
+        _array("offsets", 10 * np.arange(1, ne + 1, dtype=np.int64), "        "),
+        _array("types", np.full(ne, VTK_QUADRATIC_TETRA, dtype=np.uint8), "        "),
+        "      </Cells>\n",
+        "    </Piece>\n",
+        "  </UnstructuredGrid>\n",
+        "</VTKFile>\n",
+    ]
+    with open(path, "w", encoding="ascii") as fh:
+        fh.writelines(parts)
+    return str(path)
+
+
+def read_vtu_array(text: str, name: str) -> np.ndarray:
+    """Decode one binary array from the text of a file written by :func:`write_vtu`."""
+    import xml.etree.ElementTree as ET
+
+    for node in ET.fromstring(text).iter("DataArray"):
+        if node.get("Name") == name:
+            dtype = {v: k for k, v in _TYPES.items()}[node.get("type")]
+            raw = base64.b64decode(node.text.strip())
+            n = int(np.frombuffer(raw[:8], dtype=np.uint64)[0])
+            data = np.frombuffer(raw[8:8 + n], dtype=dtype)
+            ncomp = int(node.get("NumberOfComponents", 1))
+            return data.reshape(-1, ncomp) if ncomp > 1 else data
+    raise KeyError(name)
+
+
+def write_result(path: str | os.PathLike, result) -> str:
+    """Write a :class:`~lythos3d.core.analysis.LinearResult` for ParaView."""
+    mesh = result.mesh
+    return write_vtu(
+        path, mesh.nodes, mesh.elements,
+        point_data={
+            "displacement": result.displacement,
+            "stress": result.nodal_stress,
+        },
+        cell_data={
+            "region": mesh.region,
+            "mean_stress": result.stress.reshape(mesh.n_elements, 4, 6)[:, :, :3].mean(axis=(1, 2)),
+        },
+    )
