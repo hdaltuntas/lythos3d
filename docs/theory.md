@@ -164,3 +164,84 @@ The solver is the 2D one without the structural elements:
   converged: 20 iterations per increment instead of 40 moved the benchmark
   slope from 1.423 to 1.402. The limits are therefore kept where the answer
   no longer depends on them.
+
+## Ground from boreholes
+
+A borehole lists the soils it meets and the level at which each starts. The
+top of every soil is interpolated between boreholes:
+
+- **One borehole**: every surface is level.
+- **Collinear boreholes**: linear along the line, constant across it.
+- **Three or more**: linear over the Delaunay triangulation of the borehole
+  positions. Outside their convex hull a surface takes its value at the
+  nearest point of the hull. Plain nearest-borehole extrapolation would put
+  a step in the surface at the hull edge; this keeps it continuous.
+
+A soil a borehole does not meet has zero thickness there: its top is set to
+the top of the next soil down. Between boreholes the layer thins out to that
+point, as a lens does. Surfaces are then forced not to cross
+(`top_k = min(top_k, top_{k-1})`) and not to go below the base.
+
+The same profile gives the overburden for the K0 procedure:
+`σv = Σ γ_i · (thickness of soil i above the point)`. The initial stresses
+and the meshed geometry therefore come from one description. On dipping
+strata a K0 field is not quite in equilibrium, and the first stage's Newton
+iterations remove the difference.
+
+## Meshing a site
+
+gmsh's OpenCASCADE kernel builds the solid the way the ground is described:
+
+1. A box over the plan extent, from the base to above the highest ground.
+2. The ground surface, extruded upwards, is cut away from it.
+3. The soil interfaces fragment what remains.
+4. Each lift of each excavation is a prism, its plan polygon between two
+   levels. It is clipped to the ground and fragmented in.
+
+Every surface is a loft through splines sampled from the soil profile. A
+plane is reproduced exactly; an interpolated surface is reproduced to within
+the smoothing of its kinks, which amounts to 0.02% of the layer volumes on
+the test site.
+
+**Labelling.** After meshing, every gmsh volume takes the soil and the lift
+that most of its elements' centroids fall in. Its own centroid would not do:
+a ring of soil round a pit has its centroid inside the pit.
+
+**Sizing.** The global size applies everywhere, with finer boxes round each
+excavation. Two things matter for quality:
+
+- **Short edges.** A dipping layer that passes close to a pit corner, or a
+  layer pinching out against the side of the model, leaves edges a few
+  millimetres long. The mesh has to resolve them, and without grading the
+  elements beside them are slivers (radius ratio 10⁻⁴ on the test site).
+  Every edge shorter than a quarter of the element size therefore gets a
+  size field that starts at its own length and grows to the global size
+  over three element lengths.
+- **The 3D algorithm.** HXT, not gmsh's default Delaunay. On a half-metre
+  slab of soil between a lift floor and a layer boundary, the default left
+  a worst radius ratio of 0.01 and HXT 0.30. It runs on one thread, so a
+  site always gives the same mesh.
+
+What remains is geometric. A layer dipping at 5° that crosses a horizontal
+pit floor leaves a 5° wedge of ground, and a wedge of angle α cannot be
+filled with elements much better than about α. Those elements are harmless
+to a direct solver. `Site.build` warns only about degenerate elements.
+
+## Modified Newton
+
+A factorisation of a 100 000-equation tangent costs seconds; a
+back-substitution with it costs a small fraction of that. In a construction
+stage the tangent changes little from one iteration to the next, since most
+of the ground stays elastic. So the solver keeps the last factorisation while
+each iteration still cuts the imbalance by at least a factor of three. When
+that stops, or when the old factorisation no longer gives a descent
+direction, it factorises the current tangent. Convergence is always judged
+on the true residual, so the answer is unchanged. On the test site the
+initial stage took 8 s instead of 44 s, and the first lift 10 s instead of
+41 s.
+
+Strength reduction trials still run full Newton. Near collapse, whether a
+trial converges depends on how its iterations are spent: modified Newton
+converged trials that full Newton gave up on, and moved the benchmark slope
+from 1.438 to 1.459 with no change in the physics. The factor of safety is
+kept on the path it was verified on.

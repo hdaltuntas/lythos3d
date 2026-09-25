@@ -64,6 +64,10 @@ class Solver:
         self.max_iterations = max_iterations
         self.backend = backend
         self.linear = LinearSolver(backend)
+        #: reuse a factorisation across iterations (and increments) while it
+        #: keeps reducing the imbalance by at least ``1 / reuse_rate`` per step
+        self.modified_newton = True
+        self.reuse_rate = 0.3
         self.verbose = verbose
         self.materials = dict(problem.materials)
         #: a strength reduction trial that has taken this many times the
@@ -218,6 +222,16 @@ class Solver:
         u_committed = self._u.copy()
         state_committed = self._state.copy()
         f_int0 = self._internal(u_committed, u_committed, state_committed, active, False)[0]
+        # a new stage has new restraints and elements; never start it on the
+        # factorisation of the last one
+        self.linear.forget()
+        # Strength reduction trials run full Newton.  Near collapse a trial's
+        # verdict depends on how the iterations are spent, and modified
+        # Newton - more iterations, each cheaper - converges trials that full
+        # Newton gives up on: it moved the benchmark slope from 1.438 to 1.459
+        # with no change in the physics.  The factor of safety is kept on the
+        # path it was verified on.
+        modified = self.modified_newton and stage.kind != SSR
 
         # Adaptive stepping: an increment that will not converge is retried at
         # half the size, and once a size has failed the step never grows back
@@ -236,9 +250,10 @@ class Solver:
             target = f_int0 + trial * (f_ext - f_int0)
             u_try = u_committed.copy()
             ok, stalled = False, 0
+            reused, previous = False, None
             evaluated = self._internal(u_try, u_committed, state_committed, active, True)
             for it in range(self.max_iterations):
-                f_int, K, symmetric = evaluated
+                f_int, tangent, symmetric = evaluated
                 r = target - f_int
                 r[fixed] = 0.0
                 rn = float(np.linalg.norm(r))
@@ -246,16 +261,32 @@ class Solver:
                 if rn / scale < self.tol:
                     ok = True
                     break
+                # Modified Newton: keep the last factorisation while it still
+                # cuts the imbalance by a factor of three an iteration, and
+                # factorise the current tangent when it stops doing so.
+                refactor = (not modified or not self.linear.has_factorisation
+                            or (reused and rn > self.reuse_rate * previous))
                 try:
-                    du = solve_constrained(K, r, fixed, symmetric=symmetric, solver=self.linear)
+                    if refactor:
+                        du = solve_constrained(tangent(), r, fixed, symmetric=symmetric,
+                                               solver=self.linear)
+                    else:
+                        du = self.linear.resolve(r)
+                        du[fixed] = 0.0
                 except np.linalg.LinAlgError:
                     message = "singular stiffness matrix"
                     break
+                reused, previous = not refactor, rn
                 du = self._limit_step(du)
                 u_try, improved, evaluated = self._line_search(u_try, du, u_committed, state_committed,
                                                                target, active, fixed, rn)
                 if evaluated is None:
                     evaluated = self._internal(u_try, u_committed, state_committed, active, True)
+                if not improved and reused:
+                    # an old factorisation that no longer points downhill is
+                    # not a failure of Newton: factorise afresh and go on
+                    previous = 0.0
+                    continue
                 stalled = 0 if improved else stalled + 1
                 if stalled >= 3:
                     message = "the Newton step stopped reducing the imbalance"
@@ -322,10 +353,12 @@ class Solver:
     # ------------------------------------------------------------- assembly
     def _internal(self, u, u_committed, state_committed, active, tangent: bool,
                   return_state: bool = False):
-        """``(internal force, tangent matrix or None, symmetric or new state)``.
+        """``(internal force, tangent or None, symmetric or new state)``.
 
-        With ``tangent`` the third item says whether the tangent is symmetric
-        - true while no point has yielded - so that PARDISO can use Cholesky.
+        With ``tangent`` the second item is a function that forms the tangent
+        matrix, called only when an iteration refactorises, and the third
+        says whether it is symmetric - true while no point has yielded - so
+        that PARDISO can use Cholesky.
         """
         p = self.p
         ce = p.continuum
@@ -347,8 +380,10 @@ class Solver:
         fe[~active] = 0.0
         f_int = assemble_vector(p.n_dof, p.dofs, fe)
         if tangent:
-            K = p.pattern.assemble(ce.stiffness(tangents), active)
-            return f_int, K, not yielding
+            # the matrix itself is formed only if this iteration factorises it
+            def matrix():
+                return p.pattern.assemble(ce.stiffness(tangents), active)
+            return f_int, matrix, not yielding
         return f_int, None, new_state
 
     def _orphan_dofs(self, active: np.ndarray) -> np.ndarray:

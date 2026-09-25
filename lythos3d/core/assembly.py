@@ -92,6 +92,7 @@ class _PardisoHandle:
         self.solver = pypardiso.PyPardisoSolver(mtype=mtype)
         self._indptr = None
         self._indices = None
+        self._matrix = None
 
     def solve(self, A: sp.csr_matrix, b: np.ndarray) -> np.ndarray:
         s = self.solver
@@ -107,12 +108,19 @@ class _PardisoHandle:
             s._call_pardiso(A, b)
             self._indptr, self._indices = A.indptr.copy(), A.indices.copy()
         s.set_phase(23)
+        self._matrix = A            # iterative refinement in a later re-solve needs the values
         return s._call_pardiso(A, b)
+
+    def resolve(self, b: np.ndarray) -> np.ndarray:
+        """Solve with the factorisation already held (phase 33)."""
+        s = self.solver
+        s.set_phase(33)
+        return s._call_pardiso(self._matrix, s._check_b(self._matrix, b))
 
     def release(self) -> None:
         if self._indptr is not None:
             self.solver.free_memory(everything=True)
-            self._indptr = self._indices = None
+            self._indptr = self._indices = self._matrix = None
 
 
 class LinearSolver:
@@ -129,22 +137,47 @@ class LinearSolver:
     def __init__(self, backend: str = "auto"):
         self.backend = _resolve_backend(backend)
         self._handles: dict[int, _PardisoHandle] = {}
+        self._last = None               # what factorised the last matrix: a handle or a SuperLU object
 
     def solve(self, A: sp.spmatrix, b: np.ndarray, symmetric: bool = False,
               structurally_symmetric: bool = False) -> np.ndarray:
         if self.backend == "superlu":
-            return spla.spsolve(sp.csc_matrix(A), b)
+            self._last = spla.splu(sp.csc_matrix(A))
+            return self._last.solve(np.asarray(b, dtype=float))
         mtype = 2 if symmetric else (1 if structurally_symmetric else 11)
         A = sp.triu(A, format="csr") if symmetric else sp.csr_matrix(A)
         if mtype not in self._handles:
             self._handles[mtype] = _PardisoHandle(mtype)
-        return self._handles[mtype].solve(A, np.ascontiguousarray(b, dtype=float))
+        self._last = self._handles[mtype]
+        return self._last.solve(A, np.ascontiguousarray(b, dtype=float))
+
+    @property
+    def has_factorisation(self) -> bool:
+        return self._last is not None
+
+    def resolve(self, b: np.ndarray) -> np.ndarray:
+        """Solve with the matrix factorised last, for a new right-hand side.
+
+        A back-substitution only - a small fraction of the cost of a
+        factorisation - which is what makes modified Newton pay.
+        """
+        if self._last is None:
+            raise RuntimeError("nothing has been factorised yet")
+        b = np.ascontiguousarray(b, dtype=float)
+        if self.backend == "superlu":
+            return self._last.solve(b)
+        return self._last.resolve(b)
+
+    def forget(self) -> None:
+        """Mark the last factorisation as no longer describing the problem."""
+        self._last = None
 
     def release(self) -> None:
         """Free the factorisations PARDISO holds outside Python's memory."""
         for handle in self._handles.values():
             handle.release()
         self._handles.clear()
+        self._last = None
 
     def __del__(self):
         try:

@@ -162,6 +162,12 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
             gmsh.option.setNumber("Mesh.MeshSizeFromPoints", 0)
             gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 0)
         gmsh.option.setNumber("Mesh.MeshSizeMax", mesh_size)
+        # HXT: on thin slabs of soil (a lift floor half a metre above a layer
+        # boundary) it avoids the near-flat elements the default Delaunay
+        # mesher leaves there - worst radius ratio 0.30 against 0.01.  One
+        # thread, so the same site always gives the same mesh.
+        gmsh.option.setNumber("Mesh.Algorithm3D", 10)
+        gmsh.option.setNumber("Mesh.MaxNumThreads3D", 1)
         gmsh.option.setNumber("Mesh.Optimize", 1)
         gmsh.model.mesh.generate(3)
 

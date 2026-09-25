@@ -157,7 +157,7 @@ class Site:
         mesh, groups = mesh_site(self.profile, self.x, self.y, self.excavations,
                                  mesh_size=self.mesh_size, verbose=verbose)
         worst = float(mesh.quality().min())
-        if worst < 0.01:
+        if worst < 0.002:
             warnings.warn(f"the mesh has a nearly flat element (radius ratio {worst:.3g}); "
                           "usually a soil boundary crossing an excavation level at a very "
                           "shallow angle", RuntimeWarning, stacklevel=2)

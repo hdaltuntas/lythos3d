@@ -76,9 +76,12 @@ class Mesh:
     def quality(self) -> np.ndarray:
         """Radius ratio ``3 r_in / r_circ`` of every element's corner tetrahedron.
 
-        1 for a regular tetrahedron, 0 for a flat one.  Below about 0.01 an
-        element starts to spoil the conditioning of the stiffness matrix and
-        the accuracy of the stresses around it.
+        1 for a regular tetrahedron, 0 for a flat one.  A soil boundary that
+        crosses an excavation level at a shallow angle leaves a thin wedge of
+        ground, and no mesh can fill a wedge of angle a with elements much
+        better than about a (0.08 for a 5 degree dip); such elements, down to
+        about 0.005, are harmless to the direct solver.  A value near zero is
+        a degenerate element and a fault in the mesh.
         """
         p = self.nodes[self.elements[:, :4]]
         a, b, c, d = p[:, 0], p[:, 1], p[:, 2], p[:, 3]

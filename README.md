@@ -8,9 +8,10 @@ wrong one for the corner of an excavation pit, a pile group, a raft, or a slope
 whose failure is bounded at its ends. Lythos 3D is for those.
 
 > **Status: early development.** Mohr-Coulomb plasticity, staged excavation
-> and strength reduction work on layered ground in a box, verified against
-> closed-form solutions and against 2D Lythos. General geometry and structures
-> come next; see the [roadmap](#roadmap).
+> and strength reduction work on ground described by boreholes, with pits
+> drawn in plan and meshed by gmsh. They are verified against closed-form
+> solutions and against 2D Lythos. Structures (walls, piles, anchors) come
+> next; see the [roadmap](#roadmap).
 
 ## What works now
 
@@ -18,8 +19,17 @@ whose failure is bounded at its ends. Lythos 3D is for those.
   the 6-node triangles Lythos uses, and chosen for the same reason. Linear
   tetrahedra lock badly under the constant-volume plastic flow that
   determines a factor of safety.
-- **Layered ground in a box**: a structured mesh whose grid lines fall on
-  layer boundaries, with one material per region.
+- **Ground from boreholes**: each soil's top is interpolated between the
+  boreholes, so layers dip, and a soil missing from a borehole pinches out.
+  The K0 initial stresses come from the same profile.
+- **Excavations drawn in plan**: any polygon, dug in lifts to given levels.
+- **gmsh meshing** (OpenCASCADE): the ground surface, the soil interfaces and
+  every lift are honoured, and the mesh is refined round the pits. It also
+  grades away from the millimetre-long edges that a dipping layer leaves
+  where it grazes a pit corner.
+- **Site files**: the whole model as JSON, analysed with `lythos3d run`.
+- **Layered ground in a box**: a structured mesh without gmsh, for quick
+  models and verification.
 - **Loads**: self weight, and uniform tractions on any part of a boundary
   plane, such as a footing, a strip or a surcharge.
 - **Box restraints**: a fixed base, and sides on rollers.
@@ -46,8 +56,23 @@ lythos3d info                    # versions, and which linear solvers are availa
 lythos3d demo -o out             # a footing on sand over clay -> out/footing.vtu
 lythos3d pit -o pit              # a square pit dug in two lifts, then its factor of safety (~6 min)
 lythos3d pit --trench -o trench  # the same section as a long trench, in plane strain (~1 min)
+
+lythos3d site-example -o site.json   # three boreholes, dipping layers, a pit in two lifts
+lythos3d mesh site.json -o mesh.vtu  # mesh it; report element quality per soil and lift
+lythos3d run site.json -o run        # stage by stage, then the factor of safety
 pytest
 ```
+
+Meshing needs gmsh, which comes with `pip install -e ".[dev]"` (or
+`pip install gmsh`). On a server or container with no display, the gmsh wheel
+also needs a few system libraries:
+
+```bash
+sudo apt install libglu1-mesa libxcursor1 libxinerama1 libxft2
+```
+
+Alternatively, install gmsh's build without X:
+`pip install -i https://gmsh.info/python-packages-dev-nox gmsh`.
 
 From a clone without installing, `python main.py info` and
 `python main.py demo` do the same. You will need NumPy, SciPy and, on x86-64,
@@ -133,6 +158,11 @@ Every row is a test in `tests/`:
 | K0 procedure, layered ground | `σh = K0 σv`, no imbalance | exact, zero iterations |
 | Excavating a layer | heave `γ h H / M` | exact |
 | 2:1 slope as a plane-strain slice (`pytest -m slow`) | 2D Lythos: 1.430 | 1.438 |
+| Soil tops between boreholes | linear interpolation, exact at the holes | exact |
+| Layer volumes, 3 boreholes, dipping strata, pinch-out | independent quadrature | within 0.2% (0.02% measured) |
+| Level strata and pit lifts through gmsh | `area × thickness` | exact |
+| Same site meshed twice | identical mesh | identical |
+| JSON site description | round trip | lossless |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
 0.5%, and falls with refinement the same way:
@@ -173,8 +203,10 @@ which it sums. So a repeated run can land one bracket lower, for example
    checked against 2D Lythos in plane strain.~~
    Still to come here: groundwater and pore pressure, and constructing
    volumes (fill) as well as removing them.
-3. **Geometry**: soil layers from boreholes, excavation pits and structures
-   drawn in plan with depths, meshed by gmsh.
+3. ~~**Geometry**: soil layers from boreholes, excavations drawn in plan,
+   meshed by gmsh, site files.~~
+   Still to come here: DXF plan import (with the interface), and ground loads
+   on an irregular surface.
 4. **Structures**: plates for diaphragm and pile walls, embedded beams for
    piles, anchors, interfaces. In 3D a pile row no longer has to be smeared
    into a plate.

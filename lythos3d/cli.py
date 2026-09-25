@@ -90,6 +90,73 @@ def _pit(args) -> int:
     return 0
 
 
+def _site_example(args) -> int:
+    from .examples import sloping_site
+    from .io.site_json import save_site
+
+    print(f"written {save_site(sloping_site(), args.out)}")
+    return 0
+
+
+def _mesh(args) -> int:
+    import numpy as np
+
+    from .io.site_json import load_site
+    from .io.vtu import write_vtu
+
+    site = load_site(args.site)
+    problem = site.build()
+    mesh = problem.mesh
+    q = mesh.quality()
+    print(f"{mesh.n_elements} elements, {mesh.n_nodes} nodes, {problem.n_dof} equations")
+    print(f"element quality (radius ratio): worst {q.min():.3f}, 1% below {np.quantile(q, 0.01):.3f}")
+    for i, soil in enumerate(site.profile.soils):
+        print(f"  {soil.name}: {np.count_nonzero(mesh.region == i)} elements")
+    lift = np.zeros(mesh.n_elements, dtype=np.int64)
+    for k, (name, mask) in enumerate(problem.groups.items(), start=1):
+        lift[mask] = k
+        print(f"  {name}: {np.count_nonzero(mask)} elements")
+    if args.out:
+        print("written " + write_vtu(args.out, mesh.nodes, mesh.elements,
+                                     cell_data={"soil": mesh.region, "lift": lift, "quality": q}))
+    return 0
+
+
+def _run(args) -> int:
+    import json
+
+    from .core.solver import Solver
+    from .io.site_json import load_site
+    from .io.vtu import write_stage
+
+    site = load_site(args.site)
+    stages = [s for s in site.stages if not (args.no_fos and s.kind == "ssr")]
+    problem = site.build()
+    print(f"{site.name}: {problem.mesh.n_elements} elements, {problem.n_dof} equations")
+    os.makedirs(args.out, exist_ok=True)
+    solver = Solver(problem, tolerance=args.tolerance, backend=args.solver, verbose=args.verbose)
+    summary = []
+    for k, stage in enumerate(stages):
+        problem.check_stage_groups(stage)
+        r = solver.run_stage(stage)
+        path = write_stage(os.path.join(args.out, f"stage{k}.vtu"), problem, r)
+        summary.append({"stage": stage.name, "converged": r.converged, "seconds": round(r.seconds, 1),
+                        "max_displacement_mm": round(1000 * r.max_displacement, 2),
+                        "plastic_fraction": round(r.plastic_fraction, 4),
+                        "factor_of_safety": r.srf, "message": r.message, "file": path})
+        line = f"  {stage.name}: {'ok' if r.converged else 'FAILED'}"
+        line += (f", factor of safety {r.srf:.2f}" if r.srf is not None
+                 else f", moved up to {1000 * r.max_displacement:.1f} mm in this stage" if k else "")
+        print(f"{line}  ({r.seconds:.0f} s)", flush=True)
+        if not r.converged:
+            print(f"    {r.message}")
+            break
+    with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2)
+    print(f"results in {args.out}/ (stage*.vtu for ParaView, summary.json)")
+    return 0 if all(s["converged"] for s in summary) else 1
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="lythos3d", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -114,6 +181,24 @@ def main(argv=None) -> int:
     p.add_argument("--solver", default="auto", choices=("auto", "pardiso", "superlu"))
     p.add_argument("-v", "--verbose", action="store_true", help="report every strength reduction trial")
     p.set_defaults(func=_pit)
+
+    p = sub.add_parser("site-example", help="write an example site description (boreholes and a pit)")
+    p.add_argument("-o", "--out", default="site.json")
+    p.set_defaults(func=_site_example)
+
+    p = sub.add_parser("mesh", help="mesh a site description and report on the mesh")
+    p.add_argument("site", help="site description (.json)")
+    p.add_argument("-o", "--out", help="write the mesh as .vtu, with soils, lifts and element quality")
+    p.set_defaults(func=_mesh)
+
+    p = sub.add_parser("run", help="analyse a site description stage by stage")
+    p.add_argument("site", help="site description (.json)")
+    p.add_argument("-o", "--out", default="lythos3d_run", help="output directory")
+    p.add_argument("--no-fos", action="store_true", help="skip the factor of safety stage")
+    p.add_argument("--tolerance", type=float, default=1e-3, help="relative out-of-balance force")
+    p.add_argument("--solver", default="auto", choices=("auto", "pardiso", "superlu"))
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.set_defaults(func=_run)
 
     args = parser.parse_args(argv)
     return args.func(args)

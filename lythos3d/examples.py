@@ -36,3 +36,27 @@ def excavation_pit(half_width: float = 4.0, depth: float = 3.0, lifts: int = 2,
         strata=[Stratum("sandy clay", upper, 0.0), Stratum("stiff clay", lower, -(depth + 1.0))],
         volumes=volumes, stages=stages, mesh_size=mesh_size,
     )
+
+
+def sloping_site(mesh_size: float = 2.5):
+    """A pit on ground whose layers dip and thin between three boreholes.
+
+    The clay met in BH1 and BH3 is missing from BH2, so it pinches out
+    across the site; the ground falls 2 m from one side to the other.  The
+    pit is 8 m by 6 m, dug to 3 m in two lifts.
+    """
+    from .core.model import Site
+    from .core.site import Borehole, Excavation, Soil, SoilProfile
+
+    fill = MohrCoulomb("fill", E=2.0e4, nu=0.3, gamma=18.0, c=12.0, phi=30.0)
+    clay = MohrCoulomb("clay", E=3.0e4, nu=0.3, gamma=19.0, c=15.0, phi=24.0)
+    sand = MohrCoulomb("sand", E=6.0e4, nu=0.3, gamma=20.0, c=1.0, phi=34.0)
+    profile = SoilProfile(
+        [Soil("fill", fill), Soil("clay", clay), Soil("sand", sand)],
+        [Borehole("BH1", 0.0, 0.0, [("fill", 0.0), ("clay", -2.0), ("sand", -6.0)]),
+         Borehole("BH2", 30.0, 0.0, [("fill", 1.0), ("sand", -4.0)]),
+         Borehole("BH3", 0.0, 20.0, [("fill", -1.0), ("clay", -3.0), ("sand", -8.0)])],
+        bottom=-15.0,
+    )
+    pit = Excavation("pit", [(4.0, 4.0), (12.0, 4.0), (12.0, 10.0), (4.0, 10.0)], [-1.5, -3.0])
+    return Site("pit on sloping ground", profile, (0.0, 30.0), (0.0, 20.0), [pit], mesh_size=mesh_size)
