@@ -142,6 +142,23 @@ At the same element sizes the plane-strain slice follows 2D Lythos to within
 | 2.5 m | 1.430 | 1.438 |
 | 2.0 m | 1.416 | 1.423 |
 
+### What plane strain cannot see
+
+The same slope, cut to a finite width and held at its ends by rough rigid
+walls. The mesh has 2.5 m elements, and each width was run once:
+
+| Width | Factor of safety |
+| --- | --- |
+| 10 m | 1.847 |
+| 20 m | 1.605 |
+| 40 m | 1.508 |
+| infinite (plane strain) | 1.438 |
+
+The ends carry part of the sliding mass, so a narrow slope is markedly safer
+than its cross-section suggests. The factor falls towards the plane-strain
+value as the slope widens. Rough rigid end walls are the most favourable
+case; real ends lie somewhere between them and plane strain.
+
 A strength reduction factor is found to within its bisection bracket
 (0.007). Near failure, whether a single trial converges depends on
 round-off, and PARDISO's parallel factorisation does not fix the order in
