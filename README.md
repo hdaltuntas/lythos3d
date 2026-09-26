@@ -81,7 +81,7 @@ pip install -e ".[dev]"
 
 lythos3d info                    # versions, and which linear solvers are available
 lythos3d demo -o out             # a footing on sand over clay -> out/footing.vtu
-lythos3d pit -o pit              # a square pit dug in two lifts, then its factor of safety (~6 min)
+lythos3d pit -o pit              # a square pit dug in two lifts, then its factor of safety (~7 min)
 lythos3d pit --trench -o trench  # the same section as a long trench, in plane strain (~1 min)
 
 lythos3d site-example -o site.json   # boreholes, dipping layers, a walled and strutted pit
@@ -137,7 +137,7 @@ model = Model(
     mesh_size=1.5,
 )
 problem, results = model.run(verbose=True)
-print(results[-1].factor_of_safety)               # 1.32; the same section as a trench: 1.11
+print(results[-1].factor_of_safety)               # 1.18; the same section as a trench: 0.92
 for k, r in enumerate(results):
     write_stage(f"pit_{k}.vtu", problem, r)
 ```
@@ -202,7 +202,7 @@ Every row is a test in `tests/`:
 | Consistent tangent | finite-difference derivative | within 1e-9 E |
 | K0 procedure, layered ground | `σh = K0 σv`, no imbalance | exact, zero iterations |
 | Excavating a layer | heave `γ h H / M` | exact |
-| 2:1 slope as a plane-strain slice (`pytest -m slow`) | 2D Lythos: 1.430 | 1.438 |
+| 2:1 slope as a plane-strain slice (`pytest -m slow`) | 2D Lythos: 1.430 | 1.430 |
 | Soil tops between boreholes | linear interpolation, exact at the holes | exact |
 | Layer volumes, 3 boreholes, dipping strata, pinch-out | independent quadrature | within 0.2% (0.02% measured) |
 | Level strata and pit lifts through gmsh | `area × thickness` | exact |
@@ -235,12 +235,17 @@ Every row is a test in `tests/`:
 | Flooded excavation | same as digging buoyant dry soil | exact |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
-0.5%, and falls with refinement the same way:
+0.5%, and falls with refinement the same way towards Bishop's 1.379:
 
 | Element size | 2D Lythos | Lythos 3D slice |
 | --- | --- | --- |
-| 2.5 m | 1.430 | 1.438 |
-| 2.0 m | 1.416 | 1.423 |
+| 2.5 m | 1.430 | 1.430 |
+| 2.0 m | 1.409 | 1.402 |
+| 1.25 m | 1.374 | 1.374 |
+
+With a phreatic line rising from the toe to 6 m under the crest, Bishop
+gives 1.187, 2D Lythos 1.184 (1.25 m) and 1.163 (0.75 m), and the slice
+1.163 (1.25 m). The figures are in `docs/theory.md`.
 
 ### What plane strain cannot see
 
@@ -249,10 +254,9 @@ walls. The mesh has 2.5 m elements, and each width was run once:
 
 | Width | Factor of safety |
 | --- | --- |
-| 10 m | 1.847 |
-| 20 m | 1.605 |
-| 40 m | 1.508 |
-| infinite (plane strain) | 1.438 |
+| 10 m | 1.839 |
+| 20 m | 1.589 |
+| infinite (plane strain) | 1.430 |
 
 The ends carry part of the sliding mass, so a narrow slope is markedly safer
 than its cross-section suggests. The factor falls towards the plane-strain
@@ -262,8 +266,7 @@ case; real ends lie somewhere between them and plane strain.
 A strength reduction factor is found to within its bisection bracket
 (0.007). Near failure, whether a single trial converges depends on
 round-off, and PARDISO's parallel factorisation does not fix the order in
-which it sums. So a repeated run can land one bracket lower, for example
-1.416 instead of 1.423.
+which it sums. So a repeated run can land one bracket lower.
 
 ## Roadmap
 

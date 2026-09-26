@@ -161,9 +161,25 @@ The solver is the 2D one without the structural elements:
   times the iterations of the hardest successful one is judged to have
   failed. Tightening that budget, or the iteration limit per increment,
   makes the search faster but declares trials failed that would have
-  converged: 20 iterations per increment instead of 40 moved the benchmark
-  slope from 1.423 to 1.402. The limits are therefore kept where the answer
-  no longer depends on them.
+  converged. The limits are therefore kept where the answer no longer
+  depends on them.
+- **Strength reduction needs a tight tolerance.** Near collapse, an
+  out-of-balance force of a fraction of a percent of the model's whole load
+  can hold up a mechanism that has no true equilibrium. The larger the
+  model is next to the mechanism, the more it can hold. The trials
+  therefore converge to `2e-4` whatever the construction stages use:
+
+  | Relative tolerance | 2e-3 | 5e-4 | 2e-4 | 1e-4 |
+  | --- | --- | --- | --- | --- |
+  | Benchmark slope, 2.5 m | 1.438 | 1.430 | 1.430 | |
+  | Quarter pit (`lythos3d pit`) | 1.32 | 1.198 | 1.177 | 1.184 |
+  | The same section as a trench | 1.11 | 0.959 | 0.922 | 0.903 |
+
+  At 2e-3 the slope's answer also depended on whether full or modified
+  Newton found the pseudo-equilibrium first (1.438 against 1.459). From 2e-4
+  both agree. The trench's vertical cut, which fails by tension cracking,
+  is still drifting at 1e-4. For a brittle mechanism, check the answer at a
+  tighter `Solver.ssr_tolerance`.
 
 ## Ground from boreholes
 
@@ -240,11 +256,11 @@ on the true residual, so the answer is unchanged. On the test site the
 initial stage took 8 s instead of 44 s, and the first lift 10 s instead of
 41 s.
 
-Strength reduction trials still run full Newton. Near collapse, whether a
-trial converges depends on how its iterations are spent: modified Newton
+Strength reduction trials use it too. At a loose tolerance, modified Newton
 converged trials that full Newton gave up on, and moved the benchmark slope
-from 1.438 to 1.459 with no change in the physics. The factor of safety is
-kept on the path it was verified on.
+from 1.438 to 1.459 with no change in the physics. The cause was the
+tolerance, not the method. At the tolerance strength reduction now uses
+(2e-4, see above) both give 1.430.
 
 ## Plates
 
@@ -544,4 +560,14 @@ the crest (`γsat` = 21). It uses the same slices as the dry case:
 | 2D Lythos, 0.75 m elements | 1.360 | 1.163 |
 | 2D Lythos, 1.25 m | 1.374 | 1.184 |
 | 2D Lythos, 2.5 m | 1.430 | 1.241 |
+| 3D slice, 1.25 m | 1.374 | 1.163 |
 | 3D slice, 2.5 m | 1.430 | 1.269 |
+
+Dry, the slice follows 2D Lythos to the third decimal at both sizes. With
+water it lies 2% either side of 2D: above it at 2.5 m, below it at 1.25 m.
+At 1.25 m it already gives what 2D reaches only at 0.75 m, and it falls
+2% short of Bishop, as the dry case does on refinement. The water table
+cuts through elements, and where it does the kink in `p` is integrated
+approximately. Evaluating the water's load as 2D does, as a body force
+`−∇p` at the Gauss points, gave the same 1.269 at 2.5 m, so the difference
+is in the elements rather than in how the water is applied.
