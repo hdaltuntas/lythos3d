@@ -106,6 +106,12 @@ class Problem:
     bars: list[Bar] = field(default_factory=list)
     piles: list = field(default_factory=list)
     water: WaterTable | None = None
+    #: elements that do not exist at the start (new ground above the
+    #: surface), besides the ``absent`` groups
+    inactive: np.ndarray | None = None
+    #: group name -> region its elements take when a stage constructs it:
+    #: fill placed where ground was dug out, or a soil improved in place
+    construct_region: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.water is None:
@@ -123,6 +129,13 @@ class Problem:
         unknown = set(self.absent) - set(self.groups)
         if unknown:
             raise ValueError(f"absent group(s) {sorted(unknown)} are not defined")
+        for name, r in self.construct_region.items():
+            if name not in self.groups:
+                raise ValueError(f"construct_region names unknown group {name!r}")
+            if r not in self.materials:
+                raise ValueError(f"no material given for region {r}")
+        if self.inactive is not None:
+            self.inactive = np.asarray(self.inactive, bool)
         self._split_for_interfaces()
         if self.fixed is None:
             self.fixed = box_fixities(self.mesh)
@@ -132,11 +145,25 @@ class Problem:
         self.dofs = self.continuum.dofs()
         self.n_translation = 3 * self.mesh.n_nodes
         self._setup_structures()
+        self.initial_region = self.mesh.region.copy()
+        self._index_regions()
+
+    def _index_regions(self) -> None:
         ngp = self.continuum.n_gauss
         self._gauss_of_region = {
             r: (np.nonzero(self.mesh.region == r)[0][:, None] * ngp + np.arange(ngp)).ravel()
             for r in self.materials
         }
+
+    def set_region(self, mask: np.ndarray, region: int) -> None:
+        """Give the elements ``mask`` another material (a stage constructing them does)."""
+        self.mesh.region[mask] = region
+        self._index_regions()
+
+    def reset_regions(self) -> None:
+        """Every element back to the material it started with."""
+        self.mesh.region[:] = self.initial_region
+        self._index_regions()
 
     def _split_for_interfaces(self) -> None:
         """Give every plate with an interface its own nodes, and the soil behind it its own.

@@ -41,6 +41,10 @@ whose failure is bounded at its ends. Lythos 3D is for those.
   components with its consistent tangent.
 - **Staged construction**: K0 or gravity initial stresses, excavation by
   removing volumes of ground in lifts, surface loads per stage.
+- **Fill**: embankments and platforms drawn in plan (`SiteFill`) or as
+  blocks (`Fill`), placed lift by lift above the irregular ground, and
+  backfill that takes its own material where ground was dug out. New
+  ground starts free of stress.
 - **Factor of safety** by strength reduction.
 - **Walls and rafts**: 6-node flat shells sharing their nodes with the soil,
   specified by `E`, `ν` and thickness, or by `EA` and `EI` per metre.
@@ -258,6 +262,8 @@ Every row is a test in `tests/`:
 | Seepage along and across layers | `W Σ kᵢ tᵢ ΔH/L`, `ΔH / Σ Lᵢ/kᵢ` | exact |
 | Rectangular dam, free surface and seepage face (Charny) | `k (H₁² − H₂²)/2L` | within 3.3% (0.8% with `psi_k` = 0.2) |
 | Pumped pit behind an impermeable wall | all inflow pumped, less with a deeper wall | to 1e-6 |
+| Fill layer over the site | `γf t H / M`, fill under its own weight | exact |
+| Embankment drawn in plan over sloping ground, two lifts | volume above the ground | within 2% |
 | Undrained then drained 1D loading | `qH/(M + Kw/n)`, then `qH/M` | exact |
 | Strip footing on undrained clay, slice (`pytest -m slow`) | Prandtl `(2 + π) su` | 3.1% over (0.5 m), 1.6% (0.25 m) |
 
@@ -304,8 +310,8 @@ which it sums. So a repeated run can land one bracket lower.
    checked against 2D Lythos in plane strain.~~
    ~~Groundwater, hydrostatic pore pressure and steady seepage.~~
    ~~Undrained analysis.~~
-   Still to come here: consolidation in time, and constructing volumes (fill)
-   as well as removing them.
+   ~~Constructing volumes (fill).~~
+   Still to come here: consolidation in time.
 3. ~~**Geometry**: soil layers from boreholes, excavations drawn in plan,
    meshed by gmsh, site files.~~
    Still to come here: DXF plan import (with the interface), and ground loads

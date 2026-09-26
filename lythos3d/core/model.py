@@ -42,6 +42,26 @@ class Volume:
 
 
 @dataclass
+class Fill:
+    """An axis-aligned block of new ground, placed by a stage that constructs it.
+
+    It may stand on the ground surface (an embankment) or replace ground dug
+    out before (a backfill), or both; its elements take ``material`` and
+    start free of stress when built.  (Constructing ground that was never
+    dug changes its material and keeps its stress: an improvement in place.)
+    """
+
+    name: str
+    lo: tuple[float, float, float]
+    hi: tuple[float, float, float]
+    material: object
+
+    def contains(self, points: np.ndarray, tol: float = 1e-9) -> np.ndarray:
+        lo, hi = np.asarray(self.lo, float), np.asarray(self.hi, float)
+        return np.all((points >= lo - tol) & (points <= hi + tol), axis=1)
+
+
+@dataclass
 class Wall:
     """A plate on the rectangle from ``lo`` to ``hi``, flat in one coordinate direction."""
 
@@ -100,6 +120,8 @@ class Model:
     piles: list = field(default_factory=list)
     #: the water table at the start; stages may change it
     water: WaterTable | None = None
+    #: blocks of new ground, absent until a stage constructs them
+    fills: list[Fill] = field(default_factory=list)
 
     def __post_init__(self):
         if not self.strata:
@@ -109,9 +131,9 @@ class Model:
             raise ValueError("strata must be listed from the top down, each top below the last")
         if tops[-1] <= self.bottom:
             raise ValueError("the lowest stratum starts below the bottom of the model")
-        names = [v.name for v in self.volumes]
+        names = [v.name for v in self.volumes] + [f.name for f in self.fills]
         if len(set(names)) != len(names):
-            raise ValueError("volume names must be unique")
+            raise ValueError("volume and fill names must be unique")
 
     @property
     def surface(self) -> float:
@@ -138,7 +160,9 @@ class Model:
         (x0, x1), (y0, y1) = self.x, self.y
         z0, z1 = self.bottom, self.surface
         h, hz = self.mesh_size, self.vertical_mesh_size or self.mesh_size
-        boxes = [(v.lo, v.hi) for v in self.volumes] + [(w.lo, w.hi) for w in self.walls]
+        boxes = ([(v.lo, v.hi) for v in self.volumes] + [(w.lo, w.hi) for w in self.walls]
+                 + [(f.lo, f.hi) for f in self.fills])
+        z1 = max([z1] + [f.hi[2] for f in self.fills])
         points = [a.a for a in self.anchors] + [a.b for a in self.anchors if not a.fixed_end]
         bx = [c for lo, hi in boxes for c in (lo[0], hi[0])] + [pt[0] for pt in points]
         by = [c for lo, hi in boxes for c in (lo[1], hi[1])] + [pt[1] for pt in points]
@@ -147,6 +171,20 @@ class Model:
         mesh = box_mesh(graded(x0, x1, h, bx), graded(y0, y1, h, by), graded(z0, z1, hz, bz))
         centroids = mesh.centroids()
         mesh.region = self.stratum_of(centroids)
+        above = np.zeros(mesh.n_elements, bool)
+        if self.fills:
+            # above the ground only the fills exist, with their own material
+            # from the start; below it a fill is ground that takes the
+            # fill's material when a stage constructs it (a backfill)
+            above = centroids[:, 2] > self.surface
+            in_fill = np.full(mesh.n_elements, -1)
+            for i, f in enumerate(self.fills):
+                in_fill[(in_fill < 0) & f.contains(centroids)] = i
+            mesh.region = np.where(above & (in_fill >= 0), len(self.strata) + in_fill, mesh.region)
+            keep = ~above | (in_fill >= 0)
+            mesh = mesh.subset(keep)
+            above = above[keep]
+            centroids = mesh.centroids()
         groups = {}
         for v in self.volumes:
             mask = v.contains(centroids)
@@ -173,8 +211,19 @@ class Model:
                 if np.linalg.norm(mesh.nodes[nb] - np.asarray(a.b)) > 1e-6:
                     raise ValueError(f"anchor {a.name!r} ends outside the model")
                 bars.append(Bar(a.name, na, nb, a.EA, a.prestress))
-        return Problem(mesh, {i: s.material for i, s in enumerate(self.strata)},
-                       groups=groups, vertical_stress=self.overburden, plates=plates, bars=bars,
+        materials = {i: s.material for i, s in enumerate(self.strata)}
+        construct_region = {}
+        for i, f in enumerate(self.fills):
+            r = len(self.strata) + i
+            materials[r] = f.material
+            mask = f.contains(centroids)
+            if not mask.any():
+                raise ValueError(f"fill {f.name!r} contains no elements")
+            groups[f.name] = mask
+            construct_region[f.name] = r
+        return Problem(mesh, materials, groups=groups, inactive=above,
+                       construct_region=construct_region,
+                       vertical_stress=self.overburden, plates=plates, bars=bars,
                        piles=list(self.piles), water=self.water)
 
     def run(self, verbose: bool = False, backend: str = "auto", tolerance: float = 1e-3):
@@ -212,9 +261,12 @@ class Site:
     #: the water table at the start; a dewatered excavation draws it down
     #: to each formation level as it is dug
     water: WaterTable | None = None
+    #: embankments and platforms drawn in plan (:class:`~lythos3d.core.site.SiteFill`)
+    fills: list = field(default_factory=list)
 
     def __post_init__(self):
         names = [n for e in self.excavations for n in e.lift_names]
+        names += [n for f in self.fills for n in f.lift_names]
         names += [w.name for w in self.walls] + [a.name for a in self.anchors] + [p.name for p in self.piles]
         if len(set(names)) != len(names):
             raise ValueError("excavation lifts, walls and anchors need distinct names")
@@ -227,6 +279,9 @@ class Site:
         if built:
             stages.append(Stage("install walls and piles" if self.walls and self.piles
                                 else "install walls" if self.walls else "install piles", install=built))
+        for fill in self.fills:
+            for name, level in zip(fill.lift_names, fill.levels):
+                stages.append(Stage(f"{fill.name}: raise to {level:g}", construct=(name,)))
         pending = list(self.anchors)
         water = self.water
         for exc in self.excavations:
@@ -255,7 +310,7 @@ class Site:
         points = [a.a for a in self.anchors] + [a.b for a in self.anchors if not a.fixed_end]
         mesh, groups, wall_faces, point_nodes = mesh_site(
             self.profile, self.x, self.y, self.excavations, mesh_size=self.mesh_size,
-            verbose=verbose, walls=self.walls, points=points)
+            verbose=verbose, walls=self.walls, points=points, fills=self.fills)
         worst = float(mesh.quality().min())
         if worst < 0.002:
             warnings.warn(f"the mesh has a nearly flat element (radius ratio {worst:.3g}); "
@@ -275,12 +330,17 @@ class Site:
             else:
                 bars.append(Bar(a.name, head, next(ends), a.EA, a.prestress))
         materials = {i: s.material for i, s in enumerate(self.profile.soils)}
+        inactive = np.zeros(mesh.n_elements, bool)
+        for i, fill in enumerate(self.fills):
+            materials[self.profile.n_soils + i] = fill.material
+            for name in fill.lift_names:
+                inactive |= groups[name]
         gamma_w = self.water.gamma_w if self.water is not None else GAMMA_WATER
 
         def overburden(points, water_level=None):
             return self.profile.overburden(points, water_level, gamma_w)
 
-        return Problem(mesh, materials, groups=groups, vertical_stress=overburden,
+        return Problem(mesh, materials, groups=groups, vertical_stress=overburden, inactive=inactive,
                        plates=plates, bars=bars, piles=list(self.piles), water=self.water)
 
     def run(self, verbose: bool = False, backend: str = "auto", tolerance: float = 1e-3):

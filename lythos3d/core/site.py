@@ -236,6 +236,50 @@ class Excavation:
         return out
 
 
+@dataclass
+class SiteFill:
+    """New ground drawn in plan - an embankment, a platform - placed in lifts.
+
+    Lift ``k`` fills the plan ``polygon`` from the ground (or level ``k - 1``)
+    up to ``levels[k]``, rising lift by lift, with ``material``.  Its element
+    groups are named ``"<name> 1"``, ``"<name> 2"``...  The polygon may
+    reach the edge of the model.
+    """
+
+    name: str
+    polygon: list[tuple[float, float]]
+    levels: list[float]
+    material: object
+    mesh_size: float | None = None
+
+    def __post_init__(self):
+        if len(self.polygon) < 3:
+            raise ValueError(f"fill {self.name!r}: a polygon needs three corners")
+        if not self.levels or any(a >= b for a, b in zip(self.levels, self.levels[1:])):
+            raise ValueError(f"fill {self.name!r}: levels must rise lift by lift")
+        if _signed_area(np.asarray(self.polygon, float)) < 0:
+            self.polygon = self.polygon[::-1]
+
+    @property
+    def lift_names(self) -> list[str]:
+        return [f"{self.name} {k + 1}" for k in range(len(self.levels))]
+
+    def contains(self, points: np.ndarray) -> np.ndarray:
+        from .water import _inside
+
+        return _inside(self.polygon, points)
+
+    def lift_of(self, points: np.ndarray, ground: np.ndarray) -> np.ndarray:
+        """Lift (0-based) each point falls in, or -1: inside the polygon, above ``ground``."""
+        out = np.full(len(points), -1)
+        inside = self.contains(points) & (points[:, 2] > ground)
+        z = points[:, 2]
+        for k, level in enumerate(self.levels):
+            lower = -np.inf if k == 0 else self.levels[k - 1]
+            out[inside & (z <= level) & (z > lower) & (out < 0)] = k
+        return out
+
+
 def _signed_area(p: np.ndarray) -> float:
     x, y = p[:, 0], p[:, 1]
     return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))

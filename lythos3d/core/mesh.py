@@ -46,6 +46,12 @@ class Mesh:
     def centroids(self) -> np.ndarray:
         return self.nodes[self.elements[:, :4]].mean(axis=1)
 
+    def subset(self, keep: np.ndarray) -> "Mesh":
+        """The mesh of the elements ``keep`` (a mask), with the nodes they use renumbered."""
+        elements = self.elements[np.asarray(keep, bool)]
+        used, inverse = np.unique(elements, return_inverse=True)
+        return Mesh(self.nodes[used], inverse.reshape(elements.shape), self.region[np.asarray(keep, bool)])
+
     def boundary_faces(self) -> np.ndarray:
         """Faces used by exactly one element, as outward 6-node triangles (nf, 6)."""
         faces = self.elements[:, np.array(TET10_FACES)].reshape(-1, 6)

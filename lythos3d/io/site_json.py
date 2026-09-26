@@ -50,14 +50,14 @@ import numpy as np
 from ..core.materials import LinearElastic, MohrCoulomb
 from ..core.model import Site
 from ..core.problem import Stage
-from ..core.site import Borehole, Excavation, SiteAnchor, SiteWall, Soil, SoilProfile
+from ..core.site import Borehole, Excavation, SiteAnchor, SiteFill, SiteWall, Soil, SoilProfile
 from ..core.beams import BeamSection, EmbeddedPile
 from ..core.interfaces import InterfaceSpec
 from ..core.structures import PlateSection
 from ..core.water import Drawdown, Seepage, WaterTable
 
 MODELS = {"mohr-coulomb": MohrCoulomb, "linear-elastic": LinearElastic}
-_STAGE_KEYS = {"name", "kind", "increments", "excavate", "install", "reset_displacements",
+_STAGE_KEYS = {"name", "kind", "increments", "excavate", "construct", "install", "reset_displacements",
                "initial_stress", "srf_min", "srf_max", "water", "drained"}
 _WATER_KEYS = {"level", "wells", "drawdowns", "gamma_w", "seepage"}
 _SEEPAGE_KEYS = {"closed", "psi_k", "k_min"}
@@ -181,6 +181,9 @@ def site_from_dict(d: dict) -> Site:
                               float(a.get("prestress", 0.0)), bool(a.get("fixed_end", False)))
                    for a in d.get("anchors", [])]
         piles = [pile_from_dict(p) for p in d.get("piles", [])]
+        fills = [SiteFill(f["name"], [tuple(map(float, p)) for p in f["polygon"]],
+                          [float(z) for z in f["levels"]], material_from_dict(f["material"]), f.get("mesh_size"))
+                 for f in d.get("fills", [])]
         stages = []
         for s in d.get("stages", []):
             unknown = set(s) - _STAGE_KEYS
@@ -192,7 +195,7 @@ def site_from_dict(d: dict) -> Site:
         extent = d["extent"]
         return Site(d.get("name", "site"), profile, tuple(extent["x"]), tuple(extent["y"]),
                     excavations, stages, float(d.get("mesh_size", 2.0)), walls, anchors, piles,
-                    water_from_dict(d.get("water")))
+                    water_from_dict(d.get("water")), fills)
     except KeyError as err:
         raise ValueError(f"the site description is missing {err}") from None
 
@@ -221,8 +224,11 @@ def site_to_dict(site: Site) -> dict:
         "anchors": [{"name": a.name, "a": list(a.a), "b": list(a.b), "EA": a.EA, "prestress": a.prestress,
                      "fixed_end": a.fixed_end} for a in site.anchors],
         "piles": [_pile_to_dict(p) for p in site.piles],
+        "fills": [{"name": f.name, "polygon": [list(p) for p in f.polygon], "levels": list(f.levels),
+                   "material": material_to_dict(f.material),
+                   **({"mesh_size": f.mesh_size} if f.mesh_size else {})} for f in site.fills],
         "stages": [{"name": s.name, "kind": s.kind, "increments": s.increments,
-                    "excavate": list(s.excavate), "install": list(s.install),
+                    "excavate": list(s.excavate), "construct": list(s.construct), "install": list(s.install),
                     "reset_displacements": s.reset_displacements,
                     "initial_stress": s.initial_stress, "srf_min": s.srf_min, "srf_max": s.srf_max,
                     "water": water_to_dict(s.water), "drained": s.drained}

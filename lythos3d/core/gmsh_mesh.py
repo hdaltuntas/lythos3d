@@ -60,12 +60,14 @@ def _require_gmsh():
 def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, float],
               excavations: list[Excavation] = (), mesh_size: float = 2.0,
               sample_spacing: float | None = None, verbose: bool = False,
-              walls: list[SiteWall] = (), points=()) -> SiteMesh:
+              walls: list[SiteWall] = (), points=(), fills=()) -> SiteMesh:
     """Mesh a site; ``mesh.region`` is the soil index of every element.
 
     ``walls`` become surfaces of element faces - through the soil, or
     embedded in it where a wall stops short of the base - and every point in
     ``points`` becomes a node, so an anchor can end exactly where it should.
+    ``fills`` are meshed above the ground; their elements have region
+    ``n_soils + i`` for fill ``i`` and their lifts are groups.
     """
     gmsh = _require_gmsh()
     (x0, x1), (y0, y1) = x, y
@@ -108,6 +110,23 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
         air_volumes = [e for e in air if e[0] == 3]
         domain, _ = occ.cut([(3, box)], air_volumes)
 
+        # fills: each lift a prism over its polygon, less the ground under it
+        for fill in fills:
+            poly = np.asarray(fill.polygon, float)
+            if poly[:, 0].min() < x0 - 1e-9 or poly[:, 0].max() > x1 + 1e-9 or \
+                    poly[:, 1].min() < y0 - 1e-9 or poly[:, 1].max() > y1 + 1e-9:
+                raise ValueError(f"fill {fill.name!r} reaches outside the model")
+            for k, level in enumerate(fill.levels):
+                lower = float(tops[..., 0].min()) - 1.0 if k == 0 else fill.levels[k - 1]
+                pts = [occ.addPoint(px, py, lower) for px, py in poly]
+                lines = [occ.addLine(a, b) for a, b in zip(pts, pts[1:] + pts[:1])]
+                face = occ.addPlaneSurface([occ.addCurveLoop(lines)])
+                prism = [e for e in occ.extrude([(2, face)], 0, 0, level - lower) if e[0] == 3]
+                above, _ = occ.cut(prism, domain, removeObject=True, removeTool=False)
+                if not above:
+                    raise ValueError(f"fill {fill.name!r}: lift {k + 1} lies below the ground")
+                domain = list(domain) + list(above)
+
         tools = []
         for k in range(1, profile.n_soils):
             z = tops[..., k]
@@ -149,7 +168,8 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
             point_tools.append(len(tools))
             tools.append((0, occ.addPoint(px, py, pz)))
 
-        out_map = occ.fragment(domain, tools)[1] if tools else []
+        # fragment even with nothing to cut: fills must share their faces with the ground
+        out_map = occ.fragment(domain, tools)[1] if tools or len(domain) > 1 else []
         occ.synchronize()
         offset = len(domain)
         wall_surfaces = {name: sorted({t for i in idx for d, t in out_map[offset + i] if d == 2})
@@ -173,6 +193,20 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
 
         # sizes: the global size everywhere, finer round each excavation
         fields = []
+        for fill in fills:
+            if fill.mesh_size:
+                poly = np.asarray(fill.polygon, float)
+                f = gmsh.model.mesh.field.add("Box")
+                gmsh.model.mesh.field.setNumber(f, "VIn", fill.mesh_size)
+                gmsh.model.mesh.field.setNumber(f, "VOut", mesh_size)
+                gmsh.model.mesh.field.setNumber(f, "XMin", poly[:, 0].min())
+                gmsh.model.mesh.field.setNumber(f, "XMax", poly[:, 0].max())
+                gmsh.model.mesh.field.setNumber(f, "YMin", poly[:, 1].min())
+                gmsh.model.mesh.field.setNumber(f, "YMax", poly[:, 1].max())
+                gmsh.model.mesh.field.setNumber(f, "ZMin", profile.bottom)
+                gmsh.model.mesh.field.setNumber(f, "ZMax", max(fill.levels))
+                gmsh.model.mesh.field.setNumber(f, "Thickness", mesh_size)
+                fields.append(f)
         for exc in excavations:
             poly = np.asarray(exc.polygon, float)
             depth = float(tops[..., 0].max() - exc.levels[-1])
@@ -298,11 +332,20 @@ def mesh_site(profile: SoilProfile, x: tuple[float, float], y: tuple[float, floa
     centroids = mesh.centroids()
     soil = profile.soil_of(centroids)
     region = np.empty(mesh.n_elements, dtype=np.int64)
-    groups = {name: np.zeros(mesh.n_elements, bool) for exc in excavations for name in exc.lift_names}
+    groups = {name: np.zeros(mesh.n_elements, bool)
+              for item in list(excavations) + list(fills) for name in item.lift_names}
     lifts = [(exc, exc.lift_of(centroids)) for exc in excavations]
+    ground = profile.ground(centroids)
+    fill_lifts = [(i, f, f.lift_of(centroids, ground)) for i, f in enumerate(fills)]
     for tag in np.unique(volume_of):
         members = volume_of == tag
         region[members] = np.bincount(soil[members]).argmax()
+        for i, fill, lift in fill_lifts:
+            votes = np.bincount(lift[members] + 1, minlength=len(fill.levels) + 1)
+            k = int(votes.argmax()) - 1
+            if k >= 0:
+                region[members] = profile.n_soils + i
+                groups[fill.lift_names[k]][members] = True
         for exc, lift in lifts:
             votes = np.bincount(lift[members] + 1, minlength=len(exc.levels) + 1)
             k = int(votes.argmax()) - 1

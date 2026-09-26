@@ -129,7 +129,10 @@ class Solver:
         self._field = None
         self._undrained = True
         self._gauss_z = problem.continuum.gauss_xyz[:, :, 2].ravel()
+        problem.reset_regions()
         self._active = np.ones(problem.mesh.n_elements, bool)
+        if problem.inactive is not None:
+            self._active &= ~problem.inactive
         for name in problem.absent:
             self._active &= ~problem.groups[name]
         lo, hi = problem.mesh.bounds
@@ -157,8 +160,15 @@ class Solver:
         t0 = time.perf_counter()
         for name in stage.excavate:
             self._active &= ~self.p.groups[name]
+        ngp = self.p.continuum.n_gauss
         for name in stage.construct:
+            new = self.p.groups[name] & ~self._active
             self._active |= self.p.groups[name]
+            if name in self.p.construct_region:
+                self.p.set_region(self.p.groups[name], self.p.construct_region[name])
+            # new ground starts free of stress, whatever its nodes did before
+            gp = (np.nonzero(new)[0][:, None] * ngp + np.arange(ngp)).ravel()
+            self._state.put(gp, MaterialState.zeros(len(gp)))
         active = self._active.copy()
         if stage.water is not None:
             self._water = stage.water
