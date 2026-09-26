@@ -120,12 +120,16 @@ class Solver:
         #: iterations of the hardest successful one is taken to have failed
         self.ssr_budget_factor = 8
         self.ssr_min_budget = 200
-        #: load steps a strength reduction trial takes from the last one
-        self.ssr_increments = 6
-        #: keep the last factorisation from one strength reduction trial to
-        #: the next (the structure is the same; modified Newton refactorises
-        #: when it stops helping)
-        self.ssr_keep_factorisation = False
+        #: load steps a strength reduction trial takes from the last one, and
+        #: whether it starts on the last trial's factorisation (the structure
+        #: is the same, and modified Newton refactorises when it stops
+        #: helping).  Against 6 steps and a fresh factorisation, the example
+        #: pit's search took 289 s instead of 405 s, and gave 1.177, the
+        #: value it converges to at a tighter tolerance, rather than 1.191;
+        #: the benchmark slope is 1.430 either way.  Cutting the iteration
+        #: budget instead moved the pit to 1.198, so the budget stays.
+        self.ssr_increments = 3
+        self.ssr_keep_factorisation = True
         #: the factor of safety is bracketed to within this
         self.ssr_bracket = 0.01
         #: smallest step, as a fraction of the first, before a trial gives up
