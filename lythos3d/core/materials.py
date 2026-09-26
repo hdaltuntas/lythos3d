@@ -112,6 +112,9 @@ class MaterialState:
     #: interface state, (n_interface_elements, n_gauss, 6), carried with the
     #: soil's so that it is committed and rolled back together with it
     interface: np.ndarray | None = None
+    #: embedded piles: shaft springs (n, 6) and tip springs (m, 2)
+    embedded: np.ndarray | None = None
+    tips: np.ndarray | None = None
 
     @classmethod
     def zeros(cls, n: int) -> "MaterialState":
@@ -120,7 +123,7 @@ class MaterialState:
     def copy(self) -> "MaterialState":
         return MaterialState(self.stress.copy(), self.plastic_strain.copy(),
                              self.eps_p_eq.copy(), self.yielding.copy(),
-                             None if self.interface is None else self.interface.copy())
+                             *(None if a is None else a.copy() for a in (self.interface, self.embedded, self.tips)))
 
     def take(self, idx) -> "MaterialState":
         return MaterialState(self.stress[idx], self.plastic_strain[idx],

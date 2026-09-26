@@ -75,8 +75,8 @@ class Problem:
     for the K0 procedure; without it only gravity loading can set up the
     initial stresses.
 
-    ``plates`` and ``bars`` are the structures; they do nothing until a stage
-    installs them.
+    ``plates``, ``bars`` and ``piles`` (embedded) are the structures; they
+    do nothing until a stage installs them.
     """
 
     mesh: Mesh
@@ -87,6 +87,7 @@ class Problem:
     vertical_stress: object = None
     plates: list[Plate] = field(default_factory=list)
     bars: list[Bar] = field(default_factory=list)
+    piles: list = field(default_factory=list)
 
     def __post_init__(self):
         if isinstance(self.materials, (list, tuple)):
@@ -241,7 +242,7 @@ class Problem:
 
     def _setup_structures(self) -> None:
         """Rotation dofs for plate nodes, element data and the combined pattern."""
-        names = [p.name for p in self.plates] + [b.name for b in self.bars]
+        names = [p.name for p in self.plates] + [b.name for b in self.bars] + [p.name for p in self.piles]
         if len(set(names)) != len(names):
             raise ValueError("structure names must be unique")
         clash = set(names) & set(self.groups)
@@ -280,7 +281,10 @@ class Problem:
                 dofs += [3 * bar.b + k for k in range(3)]
             self.bar_data.append((axis / length, length, np.array(dofs, dtype=np.int64)))
 
+        self._setup_piles()
         groups = list(self.plate_dofs) + [d[None, :] for _, _, d in self.bar_data]
+        if self.piles:
+            groups += [self.beam_dofs, self.skin_dofs, self.tip_dofs]
         self.interface_dofs = (self.interface_elements.dofs() if self.interface_elements is not None
                                else np.zeros((0, 36), dtype=np.int64))
         if len(self.interface_dofs):
@@ -288,8 +292,119 @@ class Problem:
         self.system_pattern = (CombinedPattern(self.pattern, groups, self.n_dof)
                                if groups else self.pattern)
 
+    def _setup_piles(self) -> None:
+        """Beam nodes and elements for every embedded pile, and the springs tying them in."""
+        from .beams import BeamElements, EmbeddedCoupling, _GAUSS3, beam_frame, line3
+        from .elements import tet10_shape
+
+        self.pile_beams, self.pile_node_dofs = [], []
+        if not self.piles:
+            return
+        mesh = self.mesh
+        tet_dofs = self.continuum.dofs() if hasattr(self, "continuum") else None
+        if tet_dofs is None:
+            raise RuntimeError("piles are set up after the continuum")
+
+        B_skin, w_skin, k_skin, t_max, skin_dofs, skin_tet, skin_pile, skin_s = [], [], [], [], [], [], [], []
+        B_tip, k_tip, f_max, tip_dofs, tip_tet, tip_pile = [], [], [], [], [], []
+        beam_dofs, beam_pile = [], []
+        node_tet, node_N = [], []
+        for i, pile in enumerate(self.piles):
+            head, tip = np.asarray(pile.head, float), np.asarray(pile.tip, float)
+            length = float(np.linalg.norm(tip - head))
+            size = pile.element_size or max(length / 20.0, 0.25)
+            n_el = max(1, int(np.ceil(length / size - 1e-9)))
+            t = np.linspace(0.0, 1.0, 2 * n_el + 1)
+            nodes = head + t[:, None] * (tip - head)
+            elements = np.array([[2 * k, 2 * k + 1, 2 * k + 2] for k in range(n_el)])
+            beam = BeamElements(nodes, elements, pile.section)
+            start = self.n_dof
+            self.n_dof += 6 * len(nodes)
+            node_dofs = start + (6 * np.arange(len(nodes))[:, None] + np.arange(6))
+            self.pile_beams.append(beam)
+            self.pile_node_dofs.append(node_dofs)
+            beam_dofs.append(node_dofs[elements].reshape(n_el, 18))
+            beam_pile.append(np.full(n_el, i))
+            e_nodes, L_nodes = mesh.locate(nodes)
+            node_tet.append(e_nodes)
+            node_N.append(np.array([tet10_shape(lam)[0] for lam in L_nodes]))
+
+            R = beam_frame(tip - head)
+            D = pile.section.diameter
+            radius = D / 2.0
+            ring = [np.cos(a) * R[1] + np.sin(a) * R[2] for a in 2 * np.pi * np.arange(8) / 8]
+            base_points = [np.zeros(3)] + [0.65 * radius * (np.cos(a) * R[1] + np.sin(a) * R[2])
+                                           for a in 2 * np.pi * np.arange(6) / 6]
+            points, weights, along, owner, Nb, offset = [], [], [], [], [], []
+            for e in range(n_el):
+                for xi, w in _GAUSS3:
+                    N, _ = line3(xi)
+                    centre = N @ nodes[elements[e]]
+                    for r in ring:
+                        points.append(centre + radius * r)
+                        weights.append(w * 0.5 * beam.length[e] / len(ring))
+                        along.append(float(np.linalg.norm(centre - head)))
+                        owner.append(e)
+                        Nb.append(N)
+                        offset.append(radius * r)
+            n_skin = len(points)
+            tets, L = mesh.locate(np.vstack(points + [tip + b for b in base_points]))
+
+            def skew(r):
+                return np.array([[0.0, -r[2], r[1]], [r[2], 0.0, -r[0]], [-r[1], r[0], 0.0]])
+
+            G = np.array([self.materials[int(mesh.region[t])].shear_modulus for t in tets])
+            Ns = np.array([tet10_shape(lam)[0] for lam in L])
+            for q in range(n_skin):
+                # soil minus the pile's surface point u + theta x r = u - skew(r) theta
+                Bq = np.zeros((3, 48))
+                for a in range(10):
+                    Bq[:, 3 * a:3 * a + 3] = Ns[q, a] * R
+                for a in range(3):
+                    Bq[:, 30 + 6 * a:30 + 6 * a + 3] = -Nb[q][a] * R
+                    Bq[:, 30 + 6 * a + 3:30 + 6 * a + 6] = Nb[q][a] * (R @ skew(offset[q]))
+                B_skin.append(Bq)
+                w_skin.append(weights[q])
+                ks = (pile.isf_skin if pile.isf_skin is not None else 20.0 * np.pi) * G[q]
+                kn = (pile.isf_lateral if pile.isf_lateral is not None else 20.0 * np.pi) * G[q]
+                k_skin.append([ks, kn, kn])
+                if pile.skin is None:
+                    t_max.append(np.inf)
+                else:
+                    top, bottom = pile.skin
+                    t_max.append(top + (bottom - top) * along[q] / length)
+                skin_dofs.append(np.concatenate([tet_dofs[tets[q]], beam_dofs[-1][owner[q]]]))
+                skin_tet.append(tets[q])
+                skin_pile.append(i)
+                skin_s.append(along[q])
+            n_base = len(base_points)
+            for j, b in enumerate(base_points):
+                q = n_skin + j
+                Bq = np.zeros((1, 36))
+                for a in range(10):
+                    Bq[0, 3 * a:3 * a + 3] = Ns[q, a] * R[0]
+                Bq[0, 30:33] = -R[0]
+                Bq[0, 33:36] = R[0] @ skew(b)
+                B_tip.append(Bq)
+                # a layer 0.1 R thick under the base: G A / (0.1 R) = 10 pi G R, shared by the points
+                factor = pile.isf_base if pile.isf_base is not None else 10.0 * np.pi
+                k_tip.append(factor * G[q] * radius / n_base)
+                f_max.append(np.inf if pile.base is None else pile.base / n_base)
+                tip_dofs.append(np.concatenate([tet_dofs[tets[q]], node_dofs[-1]]))
+                tip_tet.append(tets[q])
+                tip_pile.append(i)
+
+        self.embedded = EmbeddedCoupling(np.array(B_skin), np.array(w_skin), np.array(k_skin), np.array(t_max),
+                                         np.array(B_tip), np.array(k_tip), np.array(f_max))
+        self.beam_dofs = np.concatenate(beam_dofs)
+        self.beam_pile = np.concatenate(beam_pile)
+        self.skin_dofs, self.skin_tet = np.array(skin_dofs), np.array(skin_tet)
+        self.skin_pile, self.skin_s = np.array(skin_pile), np.array(skin_s)
+        self.tip_dofs, self.tip_tet, self.tip_pile = np.array(tip_dofs), np.array(tip_tet), np.array(tip_pile)
+        self.pile_node_tet, self.pile_node_N = node_tet, node_N
+
     def structure_names(self) -> set[str]:
-        return {p.name for p in self.plates} | {b.name for b in self.bars}
+        return {p.name for p in self.plates} | {b.name for b in self.bars} | {p.name for p in self.piles}
 
     @property
     def n_points(self) -> int:
@@ -320,8 +435,18 @@ class Problem:
         return assemble_vector(self.n_dof, self.dofs, self.continuum.body_force(gamma))
 
     def surface_loads(self, loads) -> np.ndarray:
+        from .beams import PileLoad
+
         f = np.zeros(self.n_dof)
+        names = [p.name for p in self.piles]
         for load in loads:
+            if isinstance(load, PileLoad):
+                if load.pile not in names:
+                    raise ValueError(f"a load names unknown pile {load.pile!r}")
+                head = self.pile_node_dofs[names.index(load.pile)][0]
+                f[head[:3]] += load.force
+                f[head[3:]] += load.moment
+                continue
             faces = load.faces(self.mesh)
             if len(faces) == 0:
                 raise ValueError(f"surface load on {load.axis} = {load.value} found no boundary faces")

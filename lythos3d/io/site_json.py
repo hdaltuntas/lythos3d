@@ -36,10 +36,13 @@ from __future__ import annotations
 import json
 import os
 
+import numpy as np
+
 from ..core.materials import LinearElastic, MohrCoulomb
 from ..core.model import Site
 from ..core.problem import Stage
 from ..core.site import Borehole, Excavation, SiteAnchor, SiteWall, Soil, SoilProfile
+from ..core.beams import BeamSection, EmbeddedPile
 from ..core.interfaces import InterfaceSpec
 from ..core.structures import PlateSection
 
@@ -60,6 +63,31 @@ def section_from_dict(d: dict, owner: str) -> PlateSection:
                             weight=float(d.get("weight", 0.0)))
     except KeyError as err:
         raise ValueError(f"wall {owner!r}: needs E and t, or EA and EI") from err
+
+
+def pile_from_dict(d: dict) -> EmbeddedPile:
+    """``{"name", "head", "tip", "E", "D"[, "nu", "weight", "hollow"], "skin": [top, tip] | null,
+    "base": kN | null[, "element_size", "isf_skin", "isf_lateral", "isf_base"]}``."""
+    try:
+        section = BeamSection.circular(float(d["E"]), float(d["D"]), float(d.get("nu", 0.2)),
+                                       float(d.get("weight", 0.0)), float(d.get("hollow", 0.0)))
+        return EmbeddedPile(d["name"], tuple(map(float, d["head"])), tuple(map(float, d["tip"])), section,
+                            skin=None if d.get("skin") is None else tuple(map(float, d["skin"])),
+                            base=None if d.get("base") is None else float(d["base"]),
+                            element_size=d.get("element_size"), isf_skin=d.get("isf_skin"),
+                            isf_lateral=d.get("isf_lateral"), isf_base=d.get("isf_base"))
+    except KeyError as err:
+        raise ValueError(f"pile {d.get('name')!r} is missing {err}") from None
+
+
+def _pile_to_dict(p: EmbeddedPile) -> dict:
+    s = p.section
+    E = s.EA / (np.pi / 4 * (s.diameter ** 2 - s.hollow ** 2))
+    nu = E / (2.0 * s.GJ / (np.pi / 32 * (s.diameter ** 4 - s.hollow ** 4))) - 1.0
+    return {"name": p.name, "head": list(p.head), "tip": list(p.tip), "E": E, "nu": nu, "D": s.diameter,
+            "hollow": s.hollow, "weight": s.weight, "skin": None if p.skin is None else list(p.skin), "base": p.base,
+            "element_size": p.element_size, "isf_skin": p.isf_skin, "isf_lateral": p.isf_lateral,
+            "isf_base": p.isf_base}
 
 
 def material_from_dict(d: dict):
@@ -96,6 +124,7 @@ def site_from_dict(d: dict) -> Site:
         anchors = [SiteAnchor(a["name"], tuple(map(float, a["a"])), tuple(map(float, a["b"])), float(a["EA"]),
                               float(a.get("prestress", 0.0)), bool(a.get("fixed_end", False)))
                    for a in d.get("anchors", [])]
+        piles = [pile_from_dict(p) for p in d.get("piles", [])]
         stages = []
         for s in d.get("stages", []):
             unknown = set(s) - _STAGE_KEYS
@@ -104,7 +133,7 @@ def site_from_dict(d: dict) -> Site:
             stages.append(Stage(**s))
         extent = d["extent"]
         return Site(d.get("name", "site"), profile, tuple(extent["x"]), tuple(extent["y"]),
-                    excavations, stages, float(d.get("mesh_size", 2.0)), walls, anchors)
+                    excavations, stages, float(d.get("mesh_size", 2.0)), walls, anchors, piles)
     except KeyError as err:
         raise ValueError(f"the site description is missing {err}") from None
 
@@ -130,6 +159,7 @@ def site_to_dict(site: Site) -> dict:
                   for w in site.walls],
         "anchors": [{"name": a.name, "a": list(a.a), "b": list(a.b), "EA": a.EA, "prestress": a.prestress,
                      "fixed_end": a.fixed_end} for a in site.anchors],
+        "piles": [_pile_to_dict(p) for p in site.piles],
         "stages": [{"name": s.name, "kind": s.kind, "increments": s.increments,
                     "excavate": list(s.excavate), "install": list(s.install),
                     "reset_displacements": s.reset_displacements,

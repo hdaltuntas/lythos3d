@@ -94,6 +94,47 @@ class Mesh:
             out[:, 3 + k] = mids[pos]
         return out
 
+    def locate(self, points: np.ndarray, candidates: int = 64):
+        """The element containing each point, and the point's barycentric coordinates in it.
+
+        Returns ``(elements (n,), L (n, 4))``.  Candidates come from a k-d
+        tree of element centroids and are confirmed by the barycentric test;
+        a point none of them contains falls back to a search of every
+        element, and a point outside the mesh raises.  A point on a face
+        between elements gets whichever is found first.
+        """
+        from scipy.spatial import cKDTree
+
+        points = np.atleast_2d(np.asarray(points, float))
+        corners = self.nodes[self.elements[:, :4]]
+        tree = cKDTree(corners.mean(axis=1))
+        k = min(candidates, self.n_elements)
+        _, near = tree.query(points, k=k)
+        near = near.reshape(len(points), -1)
+
+        def bary(elems, p):
+            P = corners[elems]
+            lam = np.linalg.solve(np.transpose(P[:, 1:] - P[:, :1], (0, 2, 1)), (p - P[:, 0])[:, :, None])[:, :, 0]
+            return np.column_stack([1.0 - lam.sum(axis=1), lam])
+
+        tol = 1e-9
+        P = corners[near]                                            # (n, k, 4, 3)
+        lam = np.linalg.solve(np.transpose(P[:, :, 1:] - P[:, :, :1], (0, 1, 3, 2)),
+                              (points[:, None, :] - P[:, :, 0])[..., None])[..., 0]
+        lam = np.concatenate([1.0 - lam.sum(axis=2, keepdims=True), lam], axis=2)   # (n, k, 4)
+        margin = lam.min(axis=2)
+        best = margin.argmax(axis=1)                                 # the most comfortably inside
+        rows = np.arange(len(points))
+        found = near[rows, best]
+        L = lam[rows, best]
+        for i in np.nonzero(margin[rows, best] < -tol)[0]:           # not among the candidates
+            every = bary(np.arange(self.n_elements), np.broadcast_to(points[i], (self.n_elements, 3)))
+            j = every.min(axis=1).argmax()
+            if every[j].min() < -tol:
+                raise ValueError(f"point {tuple(points[i])} lies outside the mesh")
+            found[i], L[i] = j, every[j]
+        return found, L
+
     def nearest_node(self, point, corners_only: bool = True) -> int:
         candidates = np.unique(self.elements[:, :4]) if corners_only else np.arange(self.n_nodes)
         d = np.linalg.norm(self.nodes[candidates] - np.asarray(point, float), axis=1)

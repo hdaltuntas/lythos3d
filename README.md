@@ -54,6 +54,12 @@ whose failure is bounded at its ends. Lythos 3D is for those.
   under tension, and ties the ground rigidly until the wall is installed.
   Its strength is `R` times the soil's, or a wall friction angle given
   directly; strength reduction weakens it with the soil.
+- **Embedded piles**: 3D Timoshenko beams that run through the mesh
+  wherever they are put, tied to the soil at their perimeter. Skin
+  friction is capped at a capacity per metre, and the tip takes end bearing
+  up to its own capacity and can lift off. Loads go on the pile head, and
+  the output gives axial force, shear and moment along the pile, the skin
+  friction and the base force.
 - **Walls drawn in plan** on a gmsh site: a polyline with a toe level,
   reaching the ground or a given top. A wall may stop short of the base,
   in which case it is embedded in the soil. Anchor ends become exact nodes.
@@ -193,6 +199,10 @@ Every row is a test in `tests/`:
 | Block sliding on an interface (`pytest -m slow`) | slips at `c A + N tan φ` | holds at 98%, slides at 102%, equilibrium to 1e-6 |
 | Uninstalled wall with interfaces | continuous ground | within 1e-4 |
 | Wall friction: bonded, R = 1, R = 0.67 | each moves more | 1.09, 1.28, 1.68 mm |
+| 3D beam: rigid modes, cantilever in any direction, axial, torsion | closed form | exact |
+| Pile head load | carried by skin + base | to 1e-6 |
+| Pile axial capacity | `(T_top + T_tip) L / 2 + F_max` | holds at 97%, not at 103% |
+| Embedded pile against a pile of solid elements (`pytest -m slow`) | 1.22 mm settlement, 0.67 mm lateral | 1.28 mm, 0.72 mm |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
 0.5%, and falls with refinement the same way:
@@ -239,7 +249,7 @@ which it sums. So a repeated run can land one bracket lower, for example
    on an irregular surface.
 4. **Structures**: ~~plates for walls and rafts, anchors and struts, walls
    drawn in plan for gmsh sites~~.
-   ~~Soil–wall interfaces~~. Still to come here: embedded beams for piles.
+   ~~Soil–wall interfaces, embedded piles~~.
 5. **Interface**: a three.js viewer for contours and cut planes, a plan
    editor, DXF plan import and an HTML report.
 

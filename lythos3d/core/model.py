@@ -96,6 +96,7 @@ class Model:
     vertical_mesh_size: float | None = None
     walls: list[Wall] = field(default_factory=list)
     anchors: list[Anchor] = field(default_factory=list)
+    piles: list = field(default_factory=list)
 
     def __post_init__(self):
         if not self.strata:
@@ -169,7 +170,8 @@ class Model:
                     raise ValueError(f"anchor {a.name!r} ends outside the model")
                 bars.append(Bar(a.name, na, nb, a.EA, a.prestress))
         return Problem(mesh, {i: s.material for i, s in enumerate(self.strata)},
-                       groups=groups, vertical_stress=self.overburden, plates=plates, bars=bars)
+                       groups=groups, vertical_stress=self.overburden, plates=plates, bars=bars,
+                       piles=list(self.piles))
 
     def run(self, verbose: bool = False, backend: str = "auto", tolerance: float = 1e-3):
         """Build, then analyse every stage: ``(problem, list of StageResult)``."""
@@ -202,10 +204,11 @@ class Site:
     mesh_size: float = 2.0
     walls: list = field(default_factory=list)
     anchors: list = field(default_factory=list)
+    piles: list = field(default_factory=list)
 
     def __post_init__(self):
         names = [n for e in self.excavations for n in e.lift_names]
-        names += [w.name for w in self.walls] + [a.name for a in self.anchors]
+        names += [w.name for w in self.walls] + [a.name for a in self.anchors] + [p.name for p in self.piles]
         if len(set(names)) != len(names):
             raise ValueError("excavation lifts, walls and anchors need distinct names")
         if not self.stages:
@@ -213,8 +216,10 @@ class Site:
 
     def default_stages(self) -> list[Stage]:
         stages = [Stage("initial stresses", kind="initial", initial_stress="k0")]
-        if self.walls:
-            stages.append(Stage("install walls", install=tuple(w.name for w in self.walls)))
+        built = tuple(w.name for w in self.walls) + tuple(p.name for p in self.piles)
+        if built:
+            stages.append(Stage("install walls and piles" if self.walls and self.piles
+                                else "install walls" if self.walls else "install piles", install=built))
         pending = list(self.anchors)
         for exc in self.excavations:
             for name, level in zip(exc.lift_names, exc.levels):
@@ -260,7 +265,7 @@ class Site:
                 bars.append(Bar(a.name, head, next(ends), a.EA, a.prestress))
         materials = {i: s.material for i, s in enumerate(self.profile.soils)}
         return Problem(mesh, materials, groups=groups, vertical_stress=self.profile.overburden,
-                       plates=plates, bars=bars)
+                       plates=plates, bars=bars, piles=list(self.piles))
 
     def run(self, verbose: bool = False, backend: str = "auto", tolerance: float = 1e-3):
         """Mesh, then analyse every stage: ``(problem, list of StageResult)``."""

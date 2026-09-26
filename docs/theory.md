@@ -405,3 +405,65 @@ had yielded. On elastic ground with a sliding interface the unsymmetric
 contact tangent was factorised as if symmetric, and the solutions had
 relative residuals of order one. The tangent now counts as unsymmetric
 whenever a contact slides.
+
+## Beams and embedded piles
+
+**The beam.** A pile is a 3-node Timoshenko beam with six dofs per node.
+In its own axes, the strains are axial `du1/dx`, torsion `dθ1/dx`,
+curvatures `dθ2/dx` and `dθ3/dx`, and shears `du2/dx − θ3` and
+`du3/dx + θ2`, with `D = diag(EA, GA2, GA3, GJ, EI2, EI3)`. Everything is
+integrated by the 2-point rule. That is exact for the axial, torsion and
+bending terms of a straight quadratic element, and a reduced integration of
+shear that stops a slender beam locking. It gives twelve strain modes for
+eighteen dofs less six rigid motions, and exactly six zero-energy modes,
+which is tested. Cantilever deflection `PL³/3EI + PL/GA` is reproduced
+exactly in any orientation.
+
+**Embedding.** The beam's nodes are not mesh nodes. Every point where the
+pile meets the soil is located in the mesh: its tetrahedron is found from
+a k-d tree of element centroids and confirmed by a barycentric test. The
+soil's displacement there is interpolated with the tetrahedron's shape
+functions.
+
+**Where it is tied: perimeter, not axis.** The first version tied the
+pile to the soil along its axis, as PLAXIS's embedded beam does. Against the
+same pile modelled with solid concrete elements in elastic ground, it
+settled more than twice as much. Making the springs nearly rigid did not
+help, and refining the mesh made it worse:
+
+| Mesh | Solid pile | Axis-tied, rigid springs | Perimeter-tied |
+| --- | --- | --- | --- |
+| 2.0 m | 1.17 mm | 1.73 mm | 1.24 mm |
+| 1.0 m | 1.22 mm | 1.79 mm | 1.28 mm |
+| 0.7 m | 1.24 mm | 2.47 mm | 1.31 mm |
+
+A pile tied on its axis puts its load into the continuum along a line. The
+displacement under a line load is logarithmically singular, so the finer
+the mesh the softer the pile, without limit. The pile is therefore tied at
+its perimeter instead. At each of three stations per beam element, eight
+points on the pile's surface move with the cross-section as a rigid disc,
+`u + θ × r`. The tip is tied at seven points over its base. The load then
+enters the ground over a cylinder of the pile's own size, and the result
+converges: within 6% of the solid pile in settlement and 7–11% laterally,
+at every mesh. The remainder is the springs' own give and the solid pile's
+square section. The perimeter points also resist the pile's twist, which
+an axis alone cannot. With the axis coupling, torsion was a zero-energy mode
+and PARDISO reported a zero pivot.
+
+**Springs.** They stand for a layer of the surrounding soil a tenth of the
+pile's radius thick: `2πG R / 0.1R = 20πG` per metre along and across the
+pile, and `G A / 0.1R` under the tip. Along the pile, the skin friction is
+elastic up to its capacity `T_max` (kN per metre, varying linearly from
+head to tip) and then slides. Across it, it is elastic. At the tip, it is
+compression only, up to the end bearing capacity `F_max`, shared between
+the tip's points. Tractions are incremental from the committed state, so
+unloading is elastic. The axial capacity is therefore exactly
+`∫T_max ds + F_max`, whatever the stiffness or the mesh, which is tested.
+
+**Installation.** When a stage installs a pile, its nodes take the soil's
+displacement where they are, and its springs start from there free of
+force. Until then its dofs are held. A spring whose tetrahedron has been
+excavated switches off with it.
+
+**Strength reduction** leaves a pile's capacities as they are. They are
+the engineer's numbers for the pile, not soil strengths.

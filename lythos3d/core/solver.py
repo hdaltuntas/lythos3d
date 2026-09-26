@@ -55,6 +55,12 @@ class StageResult:
     #: relative to the wall), and the fraction of the shear strength
     #: mobilised, for the elements in contact with soil
     interface_tractions: dict = field(default_factory=dict)
+    #: per installed embedded pile: distance ``s`` from the head and the beam
+    #: resultants ``[N, Q2, Q3, T, M2, M3]`` there (N tension positive), the
+    #: shaft friction ``skin`` (kN/m, positive where the soil drags the pile
+    #: towards its tip) at ``s_skin``, and the tip force ``base`` (kN,
+    #: compression positive)
+    pile_forces: dict = field(default_factory=dict)
 
     @property
     def max_displacement(self) -> float:
@@ -104,6 +110,8 @@ class Solver:
         self._plate_reference: dict[int, np.ndarray] = {}
         #: installed bars: index -> None while being stressed, else extension at lock-off
         self._bar_reference: dict[int, float | None] = {}
+        #: installed piles: index -> displacement when installed
+        self._pile_reference: dict[int, np.ndarray] = {}
 
     # ------------------------------------------------------------------ public
     def run(self, stages, progress=None) -> list[StageResult]:
@@ -125,9 +133,13 @@ class Solver:
         active = self._active.copy()
         plate_index = {pl.name: i for i, pl in enumerate(self.p.plates)}
         bar_index = {b.name: i for i, b in enumerate(self.p.bars)}
+        pile_index = {pl.name: i for i, pl in enumerate(self.p.piles)}
         for name in stage.install:
             if name in plate_index:
                 self._plate_reference.setdefault(plate_index[name], self._u.copy())
+            elif name in pile_index:
+                if pile_index[name] not in self._pile_reference:
+                    self._install_pile(pile_index[name])
             elif bar_index[name] not in self._bar_reference:
                 self._bar_reference[bar_index[name]] = None
 
@@ -145,6 +157,7 @@ class Solver:
                 self._bar_reference[i] = self._bar_extension(i, self._u)
         result.plate_forces, result.bar_forces = self._structure_forces(self._u)
         result.interface_tractions = self._interface_tractions(active)
+        result.pile_forces = self._pile_forces()
         result.seconds = time.perf_counter() - t0
         gp_active = np.repeat(active, self.p.continuum.n_gauss)
         result.plastic_fraction = float(np.mean(result.state.yielding[gp_active])) if active.any() else 0.0
@@ -460,6 +473,25 @@ class Solver:
             f_int += assemble_vector(p.n_dof, p.interface_dofs, Fe)
             if return_state:
                 new_state.interface = np.where(live[:, None, None], trial, state_committed.interface)
+        if p.piles:
+            installed = np.array([i in self._pile_reference for i in range(len(p.piles))])
+            for i, beam in enumerate(p.pile_beams):
+                if installed[i]:
+                    d = p.beam_dofs[p.beam_pile == i]
+                    du = (u - self._pile_reference[i])[d]
+                    f_int += assemble_vector(p.n_dof, d, np.einsum("eij,ej->ei", beam.K, du))
+            K_beam = np.concatenate([b.K for b in p.pile_beams])
+            live_skin = installed[p.skin_pile] & active[p.skin_tet]
+            Fs, Ks, trial_s = p.embedded.skin(u[p.skin_dofs], state_committed.embedded)
+            Fs[~live_skin] = 0.0
+            f_int += assemble_vector(p.n_dof, p.skin_dofs, Fs)
+            live_tip = installed[p.tip_pile] & active[p.tip_tet]
+            Ft, Kt, trial_t = p.embedded.tips(u[p.tip_dofs], state_committed.tips)
+            Ft[~live_tip] = 0.0
+            f_int += assemble_vector(p.n_dof, p.tip_dofs, Ft)
+            if return_state:
+                new_state.embedded = np.where(live_skin[:, None], trial_s, state_committed.embedded)
+                new_state.tips = np.where(live_tip[:, None], trial_t, state_committed.tips)
         for i, (axis, length, dofs) in enumerate(p.bar_data):
             locked = self._bar_reference.get(i) is not None
             k = p.bars[i].EA / length
@@ -473,6 +505,9 @@ class Solver:
         if ie is not None:
             group_matrices.append(Ke_i)
             group_active.append(live)
+        if p.piles:
+            group_matrices += [K_beam, Ks, Kt]
+            group_active += [installed[p.beam_pile], live_skin, live_tip]
         if tangent:
             # the matrix itself is formed only if this iteration factorises it
             def matrix():
@@ -498,6 +533,10 @@ class Solver:
             el = p.plate_elements[i]
             if el.section.weight:
                 f += assemble_vector(p.n_dof, p.plate_dofs[i], el.self_weight())
+        for i in self._pile_reference:
+            beam = p.pile_beams[i]
+            if beam.section.weight:
+                f += assemble_vector(p.n_dof, p.beam_dofs[p.beam_pile == i], beam.self_weight())
         for i, ref in self._bar_reference.items():
             if ref is None and p.bars[i].prestress:
                 axis, _, dofs = p.bar_data[i]
@@ -523,6 +562,9 @@ class Solver:
         if self.p.interface_elements is not None:
             from .interfaces import N_GAUSS, STATE_WIDTH
             state.interface = np.zeros((self.p.interface_elements.n_elements, N_GAUSS, STATE_WIDTH))
+        if self.p.piles:
+            state.embedded = np.zeros((len(self.p.skin_dofs), 6))
+            state.tips = np.zeros((len(self.p.tip_dofs), 2))
         return state
 
     def _interface_tractions(self, active: np.ndarray) -> dict:
@@ -550,6 +592,41 @@ class Solver:
                                    "mobilised": mobilised[mask]}
         return out
 
+    def _install_pile(self, i: int) -> None:
+        """Put pile ``i`` into the ground as it now is.
+
+        Its nodes take the soil's displacement where they are, so the pile
+        starts where the ground has got to; its springs start from there
+        free of force.
+        """
+        p = self.p
+        tets, N = p.pile_node_tet[i], p.pile_node_N[i]
+        soil = np.einsum("nk,nkj->nj", N, self._u[p.continuum.dofs()[tets]].reshape(len(tets), 10, 3))
+        dofs = p.pile_node_dofs[i]
+        self._u[dofs[:, :3]] = soil
+        self._u[dofs[:, 3:]] = 0.0
+        self._pile_reference[i] = self._u.copy()
+        mine = p.skin_pile == i
+        d = np.einsum("nij,nj->ni", p.embedded.B_skin[mine], self._u[p.skin_dofs[mine]])
+        self._state.embedded[mine] = np.concatenate([d, np.zeros_like(d)], axis=1)
+        at_tip = p.tip_pile == i
+        dt = np.einsum("mij,mj->mi", p.embedded.B_tip[at_tip], self._u[p.tip_dofs[at_tip]])[:, 0]
+        self._state.tips[at_tip] = np.column_stack([dt, np.zeros_like(dt)])
+
+    def _pile_forces(self) -> dict:
+        p = self.p
+        out = {}
+        for i in self._pile_reference:
+            beam, pile = p.pile_beams[i], p.piles[i]
+            d = p.beam_dofs[p.beam_pile == i]
+            res = beam.resultants((self._u - self._pile_reference[i])[d]).reshape(-1, 6)
+            s = np.linalg.norm(beam.gauss_points().reshape(-1, 3) - np.asarray(pile.head, float), axis=1)
+            mine = p.skin_pile == i
+            out[pile.name] = {"s": s, "resultants": res, "s_skin": p.skin_s[mine],
+                              "skin": self._state.embedded[mine, 3],
+                              "base": -float(self._state.tips[p.tip_pile == i, 1].sum())}
+        return out
+
     def _nodal(self, u: np.ndarray) -> np.ndarray:
         """The translations of a system vector, (n_nodes, 3)."""
         return u[:self._n3].reshape(-1, 3)
@@ -574,5 +651,8 @@ class Solver:
             rotating[p.plate_dofs[i][:, 3::6].ravel()] = True
             rotating[p.plate_dofs[i][:, 4::6].ravel()] = True
             rotating[p.plate_dofs[i][:, 5::6].ravel()] = True
+        # piles' own dofs, likewise, until the pile is installed
+        for i in self._pile_reference:
+            rotating[self.p.pile_node_dofs[i].ravel()] = True
         held.append(np.nonzero(~rotating[self._n3:])[0] + self._n3)
         return np.concatenate(held)

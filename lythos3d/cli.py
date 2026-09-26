@@ -147,6 +147,10 @@ def _run(args) -> int:
         summary.append({"stage": stage.name, "converged": r.converged, "seconds": round(r.seconds, 1),
                         "max_plate_moment_kNm_per_m": moments,
                         "anchor_forces_kN": {k: round(v, 1) for k, v in r.bar_forces.items()},
+                        "piles": {k: {"max_compression_kN": round(float(-v["resultants"][:, 0].min()), 1),
+                                      "max_moment_kNm": round(float(np.hypot(v["resultants"][:, 4],
+                                                                             v["resultants"][:, 5]).max()), 1),
+                                      "base_kN": round(v["base"], 1)} for k, v in r.pile_forces.items()},
                         "max_displacement_mm": round(1000 * r.max_displacement, 2),
                         "plastic_fraction": round(r.plastic_fraction, 4),
                         "factor_of_safety": r.srf, "message": r.message, "file": path})
@@ -158,6 +162,11 @@ def _run(args) -> int:
             print(f"    {name}: largest moment {m:.1f} kNm/m")
         for name, force in r.bar_forces.items():
             print(f"    {name}: {force:.0f} kN")
+        for name, pf in r.pile_forces.items():
+            N = pf["resultants"][:, 0]
+            M = np.hypot(pf["resultants"][:, 4], pf["resultants"][:, 5])
+            print(f"    {name}: axial force {-N.max():.0f} to {-N.min():.0f} kN (compression +), "
+                  f"largest moment {M.max():.1f} kNm, base {pf['base']:.0f} kN")
         if not r.converged:
             print(f"    {r.message}")
             break
