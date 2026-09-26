@@ -214,3 +214,25 @@ def test_pore_pressure_and_total_stress_are_written_for_paraview(tmp_path):
     total = read_vtu_array(text, "total_stress").reshape(-1, 6)
     stress = read_vtu_array(text, "stress").reshape(-1, 6)
     assert np.allclose(total[:, 2], stress[:, 2] - p)
+
+
+def test_a_pumped_pit_without_a_wall_along_it_is_flagged_in_a_hydrostatic_analysis():
+    from lythos3d.core.model import Site
+    from lythos3d.core.site import Borehole, Excavation, SiteWall, Soil, SoilProfile
+    from lythos3d.core.structures import PlateSection
+    from lythos3d.core.water import Seepage
+
+    profile = SoilProfile([Soil("sand", SOIL)], [Borehole("BH", 0, 0, [("sand", 0.0)])], -10.0)
+    ring = [(2, 2), (6, 2), (6, 6), (2, 6)]
+    pit = Excavation("pit", ring, [-2.0], dewatered=True)
+    open_pit = Site("s", profile, (0, 10), (0, 10), [pit], water=WaterTable(level=-1.0))
+    assert "4 of its 4 edges have no wall" in open_pit.drawdown_warnings()[0]
+    wall = SiteWall("w", ring + ring[:1], -6.0, PlateSection(E=3e7, nu=0.2, t=0.5))
+    walled = Site("s", profile, (0, 10), (0, 10), [pit], walls=[wall], water=WaterTable(level=-1.0))
+    assert walled.drawdown_warnings() == []
+    # a pit against the model's side (a symmetry plane) needs no wall there
+    corner = Excavation("pit", [(0, 0), (4, 0), (4, 4), (0, 4)], [-2.0], dewatered=True)
+    half = SiteWall("w", [(4, 0), (4, 4), (0, 4)], -6.0, PlateSection(E=3e7, nu=0.2, t=0.5))
+    assert Site("s", profile, (0, 10), (0, 10), [corner], walls=[half], water=WaterTable(level=-1.0)).drawdown_warnings() == []
+    flowing = Site("s", profile, (0, 10), (0, 10), [pit], water=Seepage(WaterTable(level=-1.0)))
+    assert flowing.drawdown_warnings() == []

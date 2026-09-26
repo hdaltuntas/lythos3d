@@ -128,6 +128,8 @@ class Session:
             save_site(site, os.path.join(folder, "site.json"))
             with self.lock:
                 self.folder = folder
+            for message in site.drawdown_warnings():
+                self.say("WARNING: " + message)
             self.say(f"meshing {site.name}")
             self.progress = (0, len(stages), "meshing")
             problem = site.build()

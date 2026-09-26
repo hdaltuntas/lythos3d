@@ -309,10 +309,53 @@ class Site:
         stages.append(Stage("factor of safety", kind="ssr", loads=loads))
         return stages
 
+    def drawdown_warnings(self) -> list[str]:
+        """Pit edges pumped dry with no wall along them, in a hydrostatic analysis.
+
+        Where a drawdown ends in open ground the hydrostatic pressure jumps,
+        and the jump acts on the soil along the edge as a load nothing
+        real supplies; along a wall it is the water's thrust on the wall.
+        A seepage analysis has neither problem.
+        """
+        from .water import Seepage
+
+        if self.water is None or isinstance(self.water, Seepage) or self.water.is_dry:
+            return []
+        size = float(max(self.x[1] - self.x[0], self.y[1] - self.y[0]))
+        eps = 1e-6 * size
+        segments = [(np.asarray(a, float), np.asarray(b, float))
+                    for w in self.walls for a, b in zip(w.path[:-1], w.path[1:])]
+
+        def on(p, a, b):
+            ab = b - a
+            t = float(np.clip(np.dot(p - a, ab) / max(np.dot(ab, ab), 1e-300), 0.0, 1.0))
+            return np.linalg.norm(a + t * ab - p) < eps
+
+        def on_box(p, q):
+            return any((abs(p[k] - v) < eps and abs(q[k] - v) < eps)
+                       for k, v in ((0, self.x[0]), (0, self.x[1]), (1, self.y[0]), (1, self.y[1])))
+
+        out = []
+        for exc in self.excavations:
+            if not exc.dewatered:
+                continue
+            poly = [np.asarray(p, float) for p in exc.polygon]
+            bare = [k for k, (p, q) in enumerate(zip(poly, poly[1:] + poly[:1]))
+                    if not on_box(p, q) and not any(on(p, a, b) and on(q, a, b) for a, b in segments)]
+            if bare:
+                out.append(f"pit {exc.name!r} is pumped dry in a hydrostatic analysis but {len(bare)} of its "
+                           f"{len(poly)} edges have no wall along them: the water pressure jumps there, in the "
+                           "soil, as no real ground water does. Put a wall along the edges, or give the site "
+                           "water=Seepage(...) to solve the flow instead.")
+        return out
+
     def build(self, verbose: bool = False) -> Problem:
         import warnings
 
         from .gmsh_mesh import mesh_site
+
+        for message in self.drawdown_warnings():
+            warnings.warn(message, RuntimeWarning, stacklevel=2)
         from .structures import Bar, Plate
 
         points = [a.a for a in self.anchors] + [a.b for a in self.anchors if not a.fixed_end]
