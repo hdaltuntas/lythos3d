@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
 """Run Lythos 3D without installing it.
 
     python main.py info                 versions and the linear solvers available

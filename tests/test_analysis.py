@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Linear analyses against closed-form solutions."""
 
 import numpy as np

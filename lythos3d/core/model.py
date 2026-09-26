@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Layered ground in a box, with excavations: the model description.
 
 A :class:`Model` is what an engineer specifies - strata from the top down,

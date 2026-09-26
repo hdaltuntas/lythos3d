@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Consolidation in time against Terzaghi."""
 
 import numpy as np

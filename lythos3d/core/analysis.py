@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Linear elastic analysis of a meshed block.
 
 This is the first building block of the staged, elasto-plastic analysis to

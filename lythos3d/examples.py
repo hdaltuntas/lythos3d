@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Worked example models."""
 
 from __future__ import annotations

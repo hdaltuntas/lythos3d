@@ -375,4 +375,16 @@ and dynamic loading.
 
 ## Licence
 
-MIT.
+Copyright (C) 2026 Hasan Deniz Altuntaş.
+
+Lythos 3D is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published
+by the Free Software Foundation (`AGPL-3.0-only`). See [LICENSE](LICENSE).
+
+The AGPL also covers use over a network. If you run a modified Lythos 3D as a
+service that others use, for example behind a web page, you must offer them
+its source code.
+
+The copy of three.js in `lythos3d/io/vendor`, which the HTML reports inline,
+is by the three.js authors under the MIT licence
+(`lythos3d/io/vendor/three-LICENSE`).

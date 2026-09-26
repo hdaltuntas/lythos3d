@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Sparse assembly and the linear solver backends."""
 
 import numpy as np

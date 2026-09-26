@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """The 6-node shell against closed-form plate and beam solutions."""
 
 import numpy as np

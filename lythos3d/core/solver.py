@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Non-linear solver: staged construction, plastic analysis and strength reduction.
 
 This is the 2D Lythos solver carried into three dimensions, without the

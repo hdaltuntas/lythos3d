@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Steady seepage against closed-form flows, and its coupling to the soil."""
 
 import numpy as np

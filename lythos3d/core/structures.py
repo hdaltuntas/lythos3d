@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Structural elements: plates for walls and rafts, bars for anchors and struts.
 
 Plates

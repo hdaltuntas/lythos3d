@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Element formulations.
 
 * :class:`ContinuumElements` - 10-node quadratic tetrahedra, vectorised over

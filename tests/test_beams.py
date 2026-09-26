@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """The 3D Timoshenko beam against closed-form solutions."""
 
 import numpy as np

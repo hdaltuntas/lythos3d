@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Steady seepage: the head over the ground, with a phreatic surface found as part of the solution.
 
 Darcy's law ``q = -k grad h`` and continuity ``div q = 0`` give, for the

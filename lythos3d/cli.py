@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Command line: ``lythos3d demo`` and ``lythos3d info``."""
 
 from __future__ import annotations

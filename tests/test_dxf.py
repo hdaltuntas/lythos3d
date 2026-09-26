@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Plan outlines from DXF drawings."""
 
 import json

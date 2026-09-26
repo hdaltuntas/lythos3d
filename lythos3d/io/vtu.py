@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """VTK unstructured grid (.vtu) output, for viewing results in ParaView.
 
 Arrays are written in VTK's inline binary encoding (base64 with a 64-bit

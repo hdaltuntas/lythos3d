@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Constitutive models.
 
 Units are kN, m and kPa throughout, as in the 2D program: stiffness and

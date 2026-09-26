@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """10-node tetrahedron: shape functions, integration, rigid motion, patch test."""
 
 import numpy as np

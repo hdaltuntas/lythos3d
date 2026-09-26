@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Ground described by boreholes, and excavations drawn in plan.
 
 A borehole lists the soils it passes through and the level at which each one

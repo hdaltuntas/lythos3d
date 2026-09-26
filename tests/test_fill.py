@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Constructing ground: embankments on the surface and backfill in a dug pit."""
 
 import numpy as np

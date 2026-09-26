@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Beams in three dimensions, and piles embedded in the soil.
 
 Beams

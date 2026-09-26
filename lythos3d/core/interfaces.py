@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Zero-thickness interfaces between a wall and the soil.
 
 An interface element joins a 6-node face of the soil to the matching face of

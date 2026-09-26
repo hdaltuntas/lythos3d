@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """A meshed problem ready for the non-linear solver, and its construction stages.
 
 :class:`Problem` is the solver's view of a model: a mesh, a material for each

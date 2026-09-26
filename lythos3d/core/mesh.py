@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Tetrahedral meshes of 10-node elements.
 
 :func:`box_mesh` builds a structured mesh of a rectangular block, which is all

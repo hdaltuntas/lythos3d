@@ -8,8 +8,8 @@ version = "0.1.0"
 description = "3D finite element analysis for geotechnical engineering: the three-dimensional counterpart of Lythos."
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
-license-files = ["LICENSE"]
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "lythos3d/io/vendor/three-LICENSE"]
 authors = [{ name = "Hasan Deniz Altuntaş", email = "lythosfea@gmail.com" }]
 keywords = [
     "geotechnical", "finite element", "fem", "3d", "excavation", "foundation",

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Unstructured meshes of a site with gmsh's OpenCASCADE kernel.
 
 The geometry is built the way the ground is described:

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Boreholes, excavations in plan, and gmsh meshes of a site."""
 
 import json

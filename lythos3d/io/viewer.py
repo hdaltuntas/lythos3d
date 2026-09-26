@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """A 3D viewer for results in the browser, and an HTML report around it.
 
 :func:`write_viewer` writes one self-contained HTML file: the mesh and every

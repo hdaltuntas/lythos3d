@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Staged construction and strength reduction."""
 
 import numpy as np

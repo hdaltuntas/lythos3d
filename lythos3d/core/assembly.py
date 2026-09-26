@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Global system assembly and the sparse linear solver.
 
 A 3D model runs to hundreds of thousands of equations, which is out of reach

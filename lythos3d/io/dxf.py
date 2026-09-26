@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Plans from DXF drawings.
 
 Only what a site plan needs is read: polylines (``LWPOLYLINE``, and the

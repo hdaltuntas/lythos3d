@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Mohr-Coulomb in six stress components."""
 
 import math

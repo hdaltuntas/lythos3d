@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Loads drawn in plan on whatever the ground surface is."""
 
 import numpy as np

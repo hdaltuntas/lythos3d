@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Consolidation: the excess pore pressure dissipating in time, coupled to the soil (Biot).
 
 Displacements stay on the 10-node tetrahedra; the excess pore pressure ``p``

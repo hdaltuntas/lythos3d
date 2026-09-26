@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Undrained loading: excess pore pressure, its dissipation, and undrained strength."""
 
 import numpy as np

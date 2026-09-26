@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Groundwater: a phreatic surface and the hydrostatic pore pressure under it.
 
 The analysis is drained and in effective stress, as in 2D Lythos.  The soil

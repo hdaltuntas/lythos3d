@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Groundwater: hydrostatic pore pressure in a drained, effective-stress analysis."""
 
 import numpy as np

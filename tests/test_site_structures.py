@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """Walls and anchors drawn in plan, meshed by gmsh."""
 
 import json

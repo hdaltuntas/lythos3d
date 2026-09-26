@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: AGPL-3.0-only
 """ParaView output."""
 
 import xml.etree.ElementTree as ET
