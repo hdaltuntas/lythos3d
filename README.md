@@ -108,6 +108,8 @@ whose failure is bounded at its ends. Lythos 3D is for those.
 - **Browser**: a plan editor to draw a site, and an HTML report with a 3D
   viewer (contours, deformed shape, cut planes) that opens offline.
 
+**Türkçe kullanım kılavuzu:** [docs/kilavuz.md](docs/kilavuz.md).
+
 ## Installing and trying it
 
 ```bash
