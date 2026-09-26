@@ -131,7 +131,8 @@ class InterfaceElements:
     STICK, SLIDE, OPEN = 0, 1, 2
 
     def respond(self, u_elements: np.ndarray, committed: np.ndarray, rigid: np.ndarray,
-                strength_factor: float = 1.0, modes: np.ndarray | None = None):
+                strength_factor: float = 1.0, modes: np.ndarray | None = None,
+                pore: np.ndarray | None = None):
         """Tractions, element forces and tangents.
 
         ``committed`` (n, ngp, 6) is the converged state, ``rigid`` (n,) marks
@@ -156,10 +157,16 @@ class InterfaceElements:
         residual = self.residual_stiffness
         tn = trial_t[..., 0]
         opened = tn > self.tensile
+        # Friction acts on the effective normal stress.  Next to soil loaded
+        # undrained the contact carries the skeleton and its excess pore
+        # water together; ``pore`` (n,), that excess (compression positive),
+        # is taken off the contact pressure for the strength.  It is the
+        # committed value, so the tangent leaves out its change.
+        tn_eff = tn if pore is None else np.minimum(tn + pore[:, None], 0.0)
         tau = trial_t[..., 1:]
         tau_norm = np.linalg.norm(tau, axis=2)
         with np.errstate(invalid="ignore"):
-            limit = np.where(np.isinf(tan_phi), np.inf, c - tn * np.where(np.isinf(tan_phi), 0.0, tan_phi))
+            limit = np.where(np.isinf(tan_phi), np.inf, c - tn_eff * np.where(np.isinf(tan_phi), 0.0, tan_phi))
         sliding = ~opened & (tau_norm > limit)
         if modes is not None:
             opened = modes == self.OPEN

@@ -675,11 +675,14 @@ the drained state under the loads it carries. This is the long-term end of
 consolidation, without the time in between. Initial stresses are always
 drained.
 
-**What it does not do.** There is no consolidation in time; that needs
-coupled flow. Interfaces next to undrained soil see the contact traction of
-skeleton and excess water together, so an interface with friction is
-stronger there than an effective-stress contact would be. For `φ = 0`
-(undrained B) this makes no difference.
+**What it does not do.** Consolidation in time is a stage of its own (see
+below). Interfaces next to undrained soil carry the contact traction of
+skeleton and excess water together. Their friction therefore uses the
+effective normal stress, `c + (σn + pₑ) tan φ` with `σn` negative in
+compression. Here `pₑ` is the committed excess pore pressure of the soil
+element behind the face, so the tangent leaves out its change within an
+iteration. During a consolidation stage the excess pressure lives on the
+nodes, and the interfaces see none.
 
 **Checks:**
 

@@ -274,3 +274,17 @@ def test_interface_round_trips_through_json(tmp_path):
     again = load_site(path)
     assert again.walls[0].interface.R == 0.5
     assert site_to_dict(again) == json.load(open(path))
+
+
+def test_next_to_undrained_soil_friction_acts_on_the_effective_normal_stress():
+    """100 kPa of contact pressure of which 40 kPa is excess pore water: the limit is c + 60 tan(phi)."""
+    el, frame = _element()
+    u = _move(frame, -1e-4, 1e-3)
+    _, _, total, _ = el.respond(u, _zero_state(), np.array([False]))
+    _, _, eff, _ = el.respond(u, _zero_state(), np.array([False]), pore=np.array([40.0]))
+    tan_phi = np.tan(np.radians(25.0))
+    assert np.allclose(np.linalg.norm(total[0, :, 4:], axis=1), 5.0 + 100.0 * tan_phi)
+    assert np.allclose(np.linalg.norm(eff[0, :, 4:], axis=1), 5.0 + 60.0 * tan_phi)
+    # more excess than contact pressure leaves the cohesion alone
+    _, _, none, _ = el.respond(u, _zero_state(), np.array([False]), pore=np.array([150.0]))
+    assert np.allclose(np.linalg.norm(none[0, :, 4:], axis=1), 5.0)

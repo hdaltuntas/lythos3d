@@ -658,7 +658,8 @@ class Solver:
             live = active[p.interface_support]
             Fe, Ke_i, trial, modes = ie.respond(u[p.interface_dofs], state_committed.interface,
                                                 ~installed[p.interface_plate], self._srf,
-                                                modes=self._contact_frozen)
+                                                modes=self._contact_frozen,
+                                                pore=self._interface_pore(state_committed))
             self._contact_modes = modes
             # a sliding contact's tangent is unsymmetric (the coupling of the
             # shear traction to the normal one): no Cholesky then, whatever
@@ -763,6 +764,13 @@ class Solver:
             state.tips = np.zeros((len(self.p.tip_dofs), 2))
         return state
 
+    def _interface_pore(self, state: MaterialState) -> np.ndarray | None:
+        """Excess pore pressure in the soil behind each interface element (element mean), or None."""
+        if state.excess is None or not np.any(state.excess):
+            return None
+        per_element = state.excess.reshape(self.p.mesh.n_elements, -1).mean(axis=1)
+        return per_element[self.p.interface_support]
+
     def _interface_tractions(self, active: np.ndarray) -> dict:
         p = self.p
         ie = p.interface_elements
@@ -777,7 +785,9 @@ class Solver:
         # in-plane axes are arbitrary)
         shear = np.einsum("eij,ei->ej", ie.R[:, 1:], t[:, 1:])
         with np.errstate(divide="ignore", invalid="ignore"):
-            strength = ie.c / self._srf - np.minimum(tn, 0.0) * ie.tan_phi / self._srf
+            pore = self._interface_pore(self._state)
+            tn_eff = np.minimum(tn if pore is None else tn + pore, 0.0)
+            strength = ie.c / self._srf - tn_eff * ie.tan_phi / self._srf
             mobilised = np.where(np.isfinite(strength) & (strength > 0), tau / strength, 0.0)
         out = {}
         live = active[p.interface_support]
