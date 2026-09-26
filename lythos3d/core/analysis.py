@@ -42,6 +42,40 @@ class SurfaceLoad:
         return faces
 
 
+@dataclass
+class AreaLoad:
+    """A load ``q`` (kPa of plan area, downwards) on the ground inside a plan polygon.
+
+    It acts on whatever the ground surface is when the stage runs - sloping,
+    dug, or built up - on every upward-facing free face whose centroid lies
+    inside ``polygon``.  ``horizontal`` (kPa of plan area, x and y) adds a
+    horizontal load, as a braking or wind load does.
+    """
+
+    polygon: tuple
+    q: float
+    horizontal: tuple = (0.0, 0.0)
+    name: str = "area load"
+
+    def __post_init__(self):
+        self.polygon = tuple(tuple(map(float, p)) for p in self.polygon)
+        self.horizontal = tuple(map(float, self.horizontal))
+        if len(self.polygon) < 3:
+            raise ValueError(f"{self.name}: a polygon needs three corners")
+
+    def select(self, nodes: np.ndarray, faces: np.ndarray, normals: np.ndarray):
+        """The loaded faces among outward ``faces`` and their tractions per unit surface area."""
+        from .water import _inside
+
+        centroid = nodes[faces[:, :3]].mean(axis=1)
+        up = normals[:, 2] > 1e-6
+        mask = up & _inside(self.polygon, centroid)
+        # a plan-area load spread over a sloping face: per unit of surface, n_z of it
+        nz = normals[mask, 2]
+        traction = np.column_stack([self.horizontal[0] * nz, self.horizontal[1] * nz, -self.q * nz])
+        return faces[mask], traction
+
+
 def box_fixities(mesh: Mesh, tol: float = 1e-9) -> np.ndarray:
     """Standard restraints of a block of ground.
 

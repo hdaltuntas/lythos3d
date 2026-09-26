@@ -320,7 +320,7 @@ class Solver:
         p = self.p
         fixed = np.union1d(p.fixed, self._orphan_dofs(active))
         f_ext = (p.gravity(active, self._field) + p.water_loads(self._field, active)
-                 + p.surface_loads(stage.loads) + self._structure_loads())
+                 + p.surface_loads(stage.loads, active) + self._structure_loads())
         logs: list[IterationLog] = []
 
         u_committed = self._u.copy()

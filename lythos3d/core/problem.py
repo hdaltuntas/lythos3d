@@ -573,12 +573,27 @@ class Problem:
                 f -= assemble_vector(self.n_dof, wdofs, on_soil)
         return f
 
-    def surface_loads(self, loads) -> np.ndarray:
+    def surface_loads(self, loads, active: np.ndarray | None = None) -> np.ndarray:
+        from .analysis import AreaLoad
         from .beams import PileLoad
 
         f = np.zeros(self.n_dof)
         names = [p.name for p in self.piles]
         for load in loads:
+            if isinstance(load, AreaLoad):
+                act = np.ones(self.mesh.n_elements, bool) if active is None else active
+                faces, owner = self.free_faces(act)
+                xyz = self.mesh.nodes[faces[:, :3]]
+                n = np.cross(xyz[:, 1] - xyz[:, 0], xyz[:, 2] - xyz[:, 0])
+                n /= np.linalg.norm(n, axis=1)[:, None]
+                centre = self.mesh.nodes[self.mesh.elements[owner, :4]].mean(axis=1)
+                n *= np.sign(np.einsum("ij,ij->i", xyz.mean(axis=1) - centre, n))[:, None]
+                faces, traction = load.select(self.mesh.nodes, faces, n)
+                if len(faces) == 0:
+                    raise ValueError(f"{load.name}: no ground surface inside its polygon")
+                fdofs = (3 * faces[:, :, None] + np.arange(3)).reshape(len(faces), 18)
+                f += assemble_vector(self.n_dof, fdofs, face_traction(self.mesh.nodes, faces, traction))
+                continue
             if isinstance(load, PileLoad):
                 if load.pile not in names:
                     raise ValueError(f"a load names unknown pile {load.pile!r}")

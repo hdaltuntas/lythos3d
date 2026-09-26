@@ -57,10 +57,37 @@ from ..core.structures import PlateSection
 from ..core.water import Drawdown, Seepage, WaterTable
 
 MODELS = {"mohr-coulomb": MohrCoulomb, "linear-elastic": LinearElastic}
-_STAGE_KEYS = {"name", "kind", "increments", "excavate", "construct", "install", "reset_displacements",
+_STAGE_KEYS = {"name", "kind", "increments", "excavate", "construct", "install", "loads", "reset_displacements",
                "initial_stress", "srf_min", "srf_max", "water", "drained"}
 _WATER_KEYS = {"level", "wells", "drawdowns", "gamma_w", "seepage"}
 _SEEPAGE_KEYS = {"closed", "psi_k", "k_min"}
+
+
+def load_from_dict(d: dict):
+    """``{"area": [[x, y], ...], "q": kPa[, "horizontal": [qx, qy], "name"]}`` on the ground,
+    or ``{"pile": name, "force": [fx, fy, fz][, "moment": [...]]}`` on a pile head."""
+    from ..core.analysis import AreaLoad
+    from ..core.beams import PileLoad
+
+    if "area" in d:
+        return AreaLoad(d["area"], float(d["q"]), tuple(d.get("horizontal", (0.0, 0.0))),
+                        d.get("name", "area load"))
+    if "pile" in d:
+        return PileLoad(d["pile"], tuple(map(float, d.get("force", (0, 0, 0)))),
+                        tuple(map(float, d.get("moment", (0, 0, 0)))))
+    raise ValueError(f"a stage load needs 'area' or 'pile': {sorted(d)}")
+
+
+def load_to_dict(load) -> dict | None:
+    from ..core.analysis import AreaLoad
+    from ..core.beams import PileLoad
+
+    if isinstance(load, AreaLoad):
+        return {"name": load.name, "area": [list(p) for p in load.polygon], "q": load.q,
+                "horizontal": list(load.horizontal)}
+    if isinstance(load, PileLoad):
+        return {"pile": load.pile, "force": list(map(float, load.force)), "moment": list(map(float, load.moment))}
+    return None
 
 
 def water_from_dict(d):
@@ -191,6 +218,7 @@ def site_from_dict(d: dict) -> Site:
                 raise ValueError(f"stage {s.get('name')!r}: unknown key(s) {sorted(unknown)}")
             s = dict(s)
             s["water"] = water_from_dict(s.get("water"))
+            s["loads"] = tuple(load_from_dict(x) for x in s.get("loads", ()))
             stages.append(Stage(**s))
         extent = d["extent"]
         return Site(d.get("name", "site"), profile, tuple(extent["x"]), tuple(extent["y"]),
@@ -231,8 +259,9 @@ def site_to_dict(site: Site) -> dict:
                     "excavate": list(s.excavate), "construct": list(s.construct), "install": list(s.install),
                     "reset_displacements": s.reset_displacements,
                     "initial_stress": s.initial_stress, "srf_min": s.srf_min, "srf_max": s.srf_max,
-                    "water": water_to_dict(s.water), "drained": s.drained}
-                   for s in site.stages if not s.loads],
+                    "water": water_to_dict(s.water), "drained": s.drained,
+                    "loads": [load_to_dict(x) for x in s.loads]}
+                   for s in site.stages if all(load_to_dict(x) is not None for x in s.loads)],
     }
 
 

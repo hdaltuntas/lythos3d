@@ -30,8 +30,10 @@ whose failure is bounded at its ends. Lythos 3D is for those.
 - **Site files**: the whole model as JSON, analysed with `lythos3d run`.
 - **Layered ground in a box**: a structured mesh without gmsh, for quick
   models and verification.
-- **Loads**: self weight, and uniform tractions on any part of a boundary
-  plane, such as a footing, a strip or a surcharge.
+- **Loads**: self weight, uniform tractions on any part of a boundary
+  plane, and loads drawn in plan (`AreaLoad`, kPa of plan area, with an
+  optional horizontal part) that bear on the ground surface as it is at that
+  stage: sloping, dug or built up. Point loads on pile heads.
 - **Box restraints**: a fixed base, and sides on rollers.
 - **PARDISO**: Intel's parallel sparse direct solver, through `pypardiso`.
   SciPy's SuperLU cannot factorise a 3D model of useful
@@ -262,6 +264,7 @@ Every row is a test in `tests/`:
 | Seepage along and across layers | `W Σ kᵢ tᵢ ΔH/L`, `ΔH / Σ Lᵢ/kᵢ` | exact |
 | Rectangular dam, free surface and seepage face (Charny) | `k (H₁² − H₂²)/2L` | within 3.3% (0.8% with `psi_k` = 0.2) |
 | Pumped pit behind an impermeable wall | all inflow pumped, less with a deeper wall | to 1e-6 |
+| Area load in plan on sloping, then dug ground | resultant `q × plan area` | to 1e-9 |
 | Fill layer over the site | `γf t H / M`, fill under its own weight | exact |
 | Embankment drawn in plan over sloping ground, two lifts | volume above the ground | within 2% |
 | Undrained then drained 1D loading | `qH/(M + Kw/n)`, then `qH/M` | exact |
@@ -314,8 +317,8 @@ which it sums. So a repeated run can land one bracket lower.
    Still to come here: consolidation in time.
 3. ~~**Geometry**: soil layers from boreholes, excavations drawn in plan,
    meshed by gmsh, site files.~~
-   Still to come here: DXF plan import (with the interface), and ground loads
-   on an irregular surface.
+   ~~Ground loads on an irregular surface.~~
+   Still to come here: DXF plan import.
 4. **Structures**: ~~plates for walls and rafts, anchors and struts, walls
    drawn in plan for gmsh sites~~.
    ~~Soil–wall interfaces, embedded piles~~.
