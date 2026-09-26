@@ -76,14 +76,14 @@ class Session:
         with self.lock:
             self.log.append(line)
 
-    def start(self, site_dict: dict, fos, fineness: float = 1.0) -> tuple[bool, str]:
+    def start(self, site_dict: dict, fos, fineness: float = 1.0, lang: str = "en") -> tuple[bool, str]:
         with self.lock:
             if self.status == "running":
                 return False, "an analysis is already running"
             self.status, self.log, self.report, self.error = "running", [], None, ""
             self.progress, self.started, self.folder = (0, 0, "checking the site"), time.time(), None
             self.detail, self.cancel = "", False
-        threading.Thread(target=self._run, args=(site_dict, fos, fineness), daemon=True).start()
+        threading.Thread(target=self._run, args=(site_dict, fos, fineness, lang), daemon=True).start()
         return True, ""
 
     def stop(self) -> None:
@@ -96,7 +96,7 @@ class Session:
             if self.cancel:
                 raise Cancelled()
 
-    def _run(self, site_dict: dict, fos, fineness: float = 1.0) -> None:
+    def _run(self, site_dict: dict, fos, fineness: float = 1.0, lang: str = "en") -> None:
         """``fos`` is False, or the width to bracket the factor of safety to (True: 0.01)."""
         try:
             import numpy as np
@@ -160,7 +160,8 @@ class Session:
                 if not r.converged:
                     self.say(f"  {r.message}")
                     break
-            report = write_report(os.path.join(folder, "report.html"), problem, results, title=site.name)
+            report = write_report(os.path.join(folder, "report.html"), problem, results, title=site.name,
+                                  lang=lang)
             with self.lock:
                 self.report = report
                 self.progress = (len(stages), len(stages), "done")
@@ -279,7 +280,7 @@ def make_handler(session: Session):
             fos = body.get("fos", False)
             fos = float(fos) if isinstance(fos, (int, float)) and not isinstance(fos, bool) and fos > 0 else bool(fos)
             ok, why = session.start(body.get("site", {}), fos,
-                                    float(body.get("fineness", 1.0)))
+                                    float(body.get("fineness", 1.0)), "tr" if body.get("lang") == "tr" else "en")
             self._json({"ok": ok, "error": why}, 200 if ok else 409)
 
     return Handler

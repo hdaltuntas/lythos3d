@@ -25,6 +25,51 @@ import numpy as np
 
 
 
+#: the report and the viewer in Turkish; English is written in the code
+TR = {
+    "displacement |u| (mm)": "yer değiştirme |u| (mm)", "vertical displacement (mm)": "düşey yer değiştirme (mm)",
+    "horizontal displacement x (mm)": "yatay yer değiştirme x (mm)",
+    "horizontal displacement y (mm)": "yatay yer değiştirme y (mm)",
+    "vertical effective stress (kPa, compression +)": "düşey efektif gerilme (kPa, basınç +)",
+    "mean effective stress p' (kPa)": "ortalama efektif gerilme p' (kPa)",
+    "deviatoric stress q (kPa)": "deviatorik gerilme q (kPa)", "plastic strain": "plastik birim şekil değiştirme",
+    "pore pressure (kPa)": "boşluk suyu basıncı (kPa)", "excess pore pressure (kPa)": "aşırı boşluk suyu basıncı (kPa)",
+    "total head (m)": "toplam hidrolik yük (m)",
+    "Stage": "Aşama", "Field": "Büyüklük", "Deformation": "Deformasyon", "Cut": "Kesit", "Cut at": "Kesit konumu",
+    "Edges": "Kenarlar", "none": "yok", "did not converge": "yakınsamadı", "FoS": "GS",
+    "plates: vertical bending moment, blue to red about zero": "plakalar: düşey eğilme momenti, sıfır etrafında maviden kırmızıya",
+    "Drag to orbit, scroll to zoom, right-drag to pan.": "Döndürmek için sürükleyin, yakınlaşmak için tekerleği, kaydırmak için sağ tuşla sürükleyin.",
+    "{elements} quadratic tetrahedra, {nodes} nodes, {dofs} equations, {stages} stages.":
+        "{elements} ikinci dereceden tetrahedron, {nodes} düğüm, {dofs} denklem, {stages} aşama.",
+    "Materials": "Malzemeler", "Name": "Ad", "Model": "Model", "Parameters": "Parametreler", "Stages": "Aşamalar",
+    "Kind": "Tür", "Result": "Sonuç", "Max displacement (mm)": "En büyük yer değiştirme (mm)",
+    "Factor of safety": "Güvenlik sayısı", "Plastic points": "Plastik noktalar",
+    "Structures and water": "Yapılar ve su", "ok": "tamam", "failed": "başarısız",
+    "inflow {i}, pumped {p}": "giren {i}, pompalanan {p}", "t = {t}, excess left {e} kPa": "t = {t}, kalan aşırı {e} kPa",
+    "Strength reduction, {stage}: factor of safety {fos}": "Mukavemet azaltma, {stage}: güvenlik sayısı {fos}",
+    "trials": "denemeler", "reduction factor": "azaltma katsayısı", "max displacement (mm)": "en büyük yer değiştirme (mm)",
+    "largest excess pore pressure (kPa)": "en büyük aşırı boşluk suyu basıncı (kPa)", "Consolidation": "Konsolidasyon",
+    "time": "zaman", "Consolidation: displacement": "Konsolidasyon: yer değiştirme",
+    "largest displacement (mm)": "en büyük yer değiştirme (mm)",
+    "{wall}: vertical bending moment against level (envelope along the wall), {stage}":
+        "{wall}: kota göre düşey eğilme momenti (duvar boyunca zarf), {stage}",
+    "least": "en küçük", "greatest": "en büyük", "moment (kNm/m)": "moment (kNm/m)", "level (m)": "kot (m)",
+    "{pile}: axial force along the pile, {stage}": "{pile}: kazık boyunca eksenel kuvvet, {stage}",
+    "compression (kN)": "basınç (kN)", "distance from head (m)": "baştan uzaklık (m)", "Charts": "Grafikler",
+    "3D results": "3B sonuçlar",
+    "Choose a stage and a field; drag to orbit, scroll to zoom, right-drag to pan. The cut clips the ground and shows the field on the section.":
+        "Bir aşama ve büyüklük seçin; döndürmek için sürükleyin, yakınlaşmak için tekerleği, kaydırmak için sağ tuşla "
+        "sürükleyin. Kesit zemini keser ve büyüklüğü kesit yüzeyinde gösterir.",
+    "initial": "başlangıç", "plastic": "plastik", "ssr": "güvenlik sayısı", "consolidation": "konsolidasyon",
+}
+
+
+def translate(text: str, lang: str = "en", **values) -> str:
+    """``text`` in ``lang`` ("en" or "tr"), with ``{name}`` fields filled in."""
+    out = TR.get(text, text) if lang == "tr" else text
+    return out.format(**values) if values else out
+
+
 def _b64(a, dtype) -> str:
     return base64.b64encode(np.ascontiguousarray(a, dtype=dtype).tobytes()).decode("ascii")
 
@@ -70,7 +115,7 @@ def stage_fields(problem, result) -> dict[str, np.ndarray]:
     return fields
 
 
-def viewer_data(problem, results, title: str = "Lythos 3D") -> dict:
+def viewer_data(problem, results, title: str = "Lythos 3D", lang: str = "en") -> dict:
     """Everything the viewer draws, as a JSON-able dict."""
     mesh = problem.mesh
     corners = np.unique(mesh.elements[:, :4])
@@ -107,7 +152,7 @@ def viewer_data(problem, results, title: str = "Lythos 3D") -> dict:
             "name": r.name, "kind": r.kind, "converged": bool(r.converged),
             "active": _b64(np.asarray(r.active, bool), np.uint8),
             "disp": _b64(r.displacement[corners], np.float32),
-            "fields": {name: _b64(v[corners], np.float32) for name, v in fields.items()},
+            "fields": {translate(name, lang): _b64(v[corners], np.float32) for name, v in fields.items()},
             "plates": plate_data,
             "fos": r.srf,
         })
@@ -121,6 +166,9 @@ def viewer_data(problem, results, title: str = "Lythos 3D") -> dict:
         "plates": [{"name": p["name"], "coords": _b64(mesh.nodes[p["nodes"]], np.float32),
                     "tris": _b64(p["tris"], np.uint32), "n": int(len(p["tris"]))} for p in plates],
         "stages": stages,
+        "labels": {k: translate(k, lang) for k in ("Stage", "Field", "Deformation", "Cut", "Cut at", "Edges", "none",
+                                                     "did not converge", "FoS",
+                                                     "plates: vertical bending moment, blue to red about zero")},
     }
 
 
@@ -186,13 +234,14 @@ export function mount(root, data) {
   const legend = document.createElement('div'); legend.className = 'l3v-legend'; root.appendChild(legend);
   function control(label, el) { const l = document.createElement('label'); l.textContent = label; panel.append(l, el); return el; }
   function select(options) { const s = document.createElement('select'); options.forEach((o, i) => s.add(new Option(o, i))); return s; }
-  const stageSel = control('Stage', select(stages.map(s => s.name + (s.fos ? ` (FoS ${s.fos.toFixed(3)})` : ''))));
+  const L = k => (data.labels || {})[k] || k;
+  const stageSel = control(L('Stage'), select(stages.map(s => s.name + (s.fos ? ` (${L('FoS')} ${s.fos.toFixed(3)})` : ''))));
   stageSel.value = stages.length - 1;
-  const fieldSel = control('Field', select([]));
-  const scale = control('Deformation', Object.assign(document.createElement('input'), {type: 'range', min: 0, max: 1, step: 0.01, value: 0}));
-  const axisSel = control('Cut', select(['none', 'x', 'y', 'z']));
-  const cutPos = control('Cut at', Object.assign(document.createElement('input'), {type: 'range', min: 0, max: 1, step: 0.005, value: 0.5}));
-  const edges = control('Edges', Object.assign(document.createElement('input'), {type: 'checkbox', checked: true}));
+  const fieldSel = control(L('Field'), select([]));
+  const scale = control(L('Deformation'), Object.assign(document.createElement('input'), {type: 'range', min: 0, max: 1, step: 0.01, value: 0}));
+  const axisSel = control(L('Cut'), select([L('none'), 'x', 'y', 'z']));
+  const cutPos = control(L('Cut at'), Object.assign(document.createElement('input'), {type: 'range', min: 0, max: 1, step: 0.005, value: 0.5}));
+  const edges = control(L('Edges'), Object.assign(document.createElement('input'), {type: 'checkbox', checked: true}));
 
   let meshObj = null, lineObj = null, cutObj = null, plateObjs = [];
   const clip = new THREE.Plane(new THREE.Vector3(1, 0, 0), 0);
@@ -290,9 +339,9 @@ export function mount(root, data) {
       cutObj = new THREE.Mesh(cg, cutMat); scene.add(cutObj);
     } else cutObj = null;
     const fmt = v => Math.abs(v) >= 1000 || (Math.abs(v) < 0.01 && v !== 0) ? v.toExponential(2) : v.toFixed(2);
-    legend.innerHTML = `<div>${fieldSel.value}${st.converged ? '' : ' - <b>did not converge</b>'}</div><div class="l3v-bar"></div>` +
+    legend.innerHTML = `<div>${fieldSel.value}${st.converged ? '' : ` - <b>${L('did not converge')}</b>`}</div><div class="l3v-bar"></div>` +
       `<div class="l3v-ends"><span>${fmt(fmin)}</span><span>${fmt((fmin + fmax) / 2)}</span><span>${fmt(fmax)}</span></div>` +
-      (plateObjs.length ? '<div style="margin-top:4px;color:var(--muted)">plates: vertical bending moment, blue to red about zero</div>' : '');
+      (plateObjs.length ? `<div style="margin-top:4px;color:var(--muted)">${L('plates: vertical bending moment, blue to red about zero')}</div>` : '');
   }
   stageSel.onchange = () => { refreshFields(); draw(); };
   [fieldSel, axisSel, edges].forEach(el => el.onchange = draw);
@@ -306,7 +355,7 @@ export function mount(root, data) {
 """
 
 _PAGE = """<!doctype html>
-<html lang="en">
+<html lang="{lang}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -370,19 +419,21 @@ def _importmap(offline: bool = True) -> str:
     return json.dumps({"imports": imports})
 
 
-def _page(title: str, body: str, data: dict, offline: bool = True) -> str:
+def _page(title: str, body: str, data: dict, offline: bool = True, lang: str = "en") -> str:
     js = _VIEWER_JS.replace("export function mount", "function mount")
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
     return _PAGE.format(title=html.escape(title), css=_VIEWER_CSS, body=body, data=payload, js=js,
-                        importmap=_importmap(offline))
+                        importmap=_importmap(offline), lang=lang)
 
 
-def write_viewer(path: str | os.PathLike, problem, results, title: str = "Lythos 3D", offline: bool = True) -> str:
+def write_viewer(path: str | os.PathLike, problem, results, title: str = "Lythos 3D", offline: bool = True,
+                 lang: str = "en") -> str:
     """A self-contained HTML page showing every stage in 3D (three.js inlined unless ``offline=False``)."""
-    body = (f"<h1>{html.escape(title)}</h1><p class='muted'>Drag to orbit, scroll to zoom, right-drag to pan.</p>"
+    body = (f"<h1>{html.escape(title)}</h1><p class='muted'>"
+            f"{translate('Drag to orbit, scroll to zoom, right-drag to pan.', lang)}</p>"
             "<div class='l3v' id='l3v'></div>")
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(_page(title, body, viewer_data(problem, results, title), offline))
+        fh.write(_page(title, body, viewer_data(problem, results, title, lang), offline, lang))
     return str(path)
 
 
@@ -441,26 +492,31 @@ def _fmt(v, digits=3):
 
 
 def write_report(path: str | os.PathLike, problem, results, title: str = "Lythos 3D analysis",
-                 materials_table: bool = True, offline: bool = True) -> str:
-    """An HTML report: model, stages, charts and the 3D viewer, in one file."""
+                 materials_table: bool = True, offline: bool = True, lang: str = "en") -> str:
+    """An HTML report: model, stages, charts and the 3D viewer, in one file (``lang`` "en" or "tr")."""
     mesh = problem.mesh
+
+    def L(text, **values):
+        return translate(text, lang, **values)
+
     rows = []
     for r in results:
         forces = [f"{k}: {v:.0f} kN" for k, v in r.bar_forces.items()]
         moments = [f"{k}: {np.abs(M).max():.1f} kNm/m" for k, (_, M, _) in r.plate_forces.items()]
         extra = []
         if r.flows:
-            extra.append(f"inflow {r.flows.get('in', 0):.3g}, pumped {r.flows.get('pumped', 0):.3g}")
+            extra.append(L("inflow {i}, pumped {p}", i=f"{r.flows.get('in', 0):.3g}", p=f"{r.flows.get('pumped', 0):.3g}"))
         if r.consolidation:
-            extra.append(f"t = {r.time:.3g}, excess left {r.consolidation[-1][1]:.1f} kPa")
-        status = "ok" if r.converged else f"<span class='bad'>failed</span> {html.escape(r.message)}"
-        rows.append(f"<tr><td>{html.escape(r.name)}</td><td>{html.escape(r.kind)}</td><td>{status}</td>"
+            extra.append(L("t = {t}, excess left {e} kPa", t=f"{r.time:.3g}", e=f"{r.consolidation[-1][1]:.1f}"))
+        status = L("ok") if r.converged else f"<span class='bad'>{L('failed')}</span> {html.escape(r.message)}"
+        rows.append(f"<tr><td>{html.escape(r.name)}</td><td>{html.escape(L(r.kind))}</td><td>{status}</td>"
                     f"<td>{1000 * r.max_displacement:.2f}</td><td>{_fmt(r.srf)}</td>"
                     f"<td>{100 * r.plastic_fraction:.1f}%</td><td>{'<br>'.join(moments + forces + extra) or '-'}</td>"
                     f"<td>{r.seconds:.0f}</td></tr>")
     body = [f"<h1>{html.escape(title)}</h1>",
-            f"<p class='muted'>{mesh.n_elements} quadratic tetrahedra, {mesh.n_nodes} nodes, "
-            f"{problem.n_dof} equations, {len(results)} stages.</p>"]
+            "<p class='muted'>" + L("{elements} quadratic tetrahedra, {nodes} nodes, {dofs} equations, {stages} stages.",
+                                    elements=mesh.n_elements, nodes=mesh.n_nodes, dofs=problem.n_dof,
+                                    stages=len(results)) + "</p>"]
     if materials_table:
         mrows = []
         for r, m in problem.materials.items():
@@ -468,29 +524,31 @@ def write_report(path: str | os.PathLike, problem, results, title: str = "Lythos
                       if hasattr(m, k) and getattr(m, k) is not None}
             mrows.append(f"<tr><td>{html.escape(m.name)}</td><td>{type(m).__name__}</td><td>"
                          + ", ".join(f"{k} = {_fmt(v)}" for k, v in params.items()) + "</td></tr>")
-        body.append("<h2>Materials</h2><div class='scroll'><table><tr><th>Name</th><th>Model</th><th>Parameters</th></tr>"
+        body.append(f"<h2>{L('Materials')}</h2><div class='scroll'><table><tr><th>{L('Name')}</th><th>{L('Model')}</th>"
+                    f"<th>{L('Parameters')}</th></tr>"
                     + "".join(mrows) + "</table></div>")
-    body.append("<h2>Stages</h2><div class='scroll'><table><tr><th>Stage</th><th>Kind</th><th>Result</th>"
-                "<th>Max displacement (mm)</th><th>Factor of safety</th><th>Plastic points</th>"
-                "<th>Structures and water</th><th>s</th></tr>" + "".join(rows) + "</table></div>")
+    body.append(f"<h2>{L('Stages')}</h2><div class='scroll'><table><tr><th>{L('Stage')}</th><th>{L('Kind')}</th>"
+                f"<th>{L('Result')}</th><th>{L('Max displacement (mm)')}</th><th>{L('Factor of safety')}</th>"
+                f"<th>{L('Plastic points')}</th><th>{L('Structures and water')}</th><th>s</th></tr>"
+                + "".join(rows) + "</table></div>")
 
     charts = []
     for r in results:
         if r.srf_curve:
             f, d = zip(*r.srf_curve)
-            charts.append((f"Strength reduction, {r.name}: factor of safety {_fmt(r.srf)}",
-                           _svg_chart([("trials", f, 1000 * np.asarray(d))], "reduction factor",
-                                      "max displacement (mm)", markers=True)))
+            charts.append((L("Strength reduction, {stage}: factor of safety {fos}", stage=r.name, fos=_fmt(r.srf)),
+                           _svg_chart([(L("trials"), f, 1000 * np.asarray(d))], L("reduction factor"),
+                                      L("max displacement (mm)"), markers=True)))
     cons = [r for r in results if r.consolidation]
     if cons:
         series = []
         t = np.concatenate([[c[0] for c in r.consolidation] for r in cons])
         p = np.concatenate([[c[1] for c in r.consolidation] for r in cons])
-        series.append(("largest excess pore pressure (kPa)", t, p))
-        charts.append(("Consolidation", _svg_chart(series, "time", "kPa")))
+        series.append((L("largest excess pore pressure (kPa)"), t, p))
+        charts.append((L("Consolidation"), _svg_chart(series, L("time"), "kPa")))
         d = np.concatenate([[1000 * c[2] for c in r.consolidation] for r in cons])
-        charts.append(("Consolidation: displacement", _svg_chart([("largest displacement (mm)", t, d)],
-                                                                 "time", "mm")))
+        charts.append((L("Consolidation: displacement"), _svg_chart([(L("largest displacement (mm)"), t, d)],
+                                                                    L("time"), "mm")))
     last = results[-1] if results else None
     for r in reversed(results):
         if r.plate_forces and r.kind != "ssr":
@@ -515,21 +573,22 @@ def write_report(path: str | os.PathLike, problem, results, title: str = "Lythos
                     mids.append(0.5 * (edges[b] + edges[b + 1]))
                     lows.append(Mv[band == b].min())
                     highs.append(Mv[band == b].max())
-            charts.append((f"{plate.name}: vertical bending moment against level (envelope along the wall), "
-                           f"{last.name}",
-                           _svg_chart([("least", lows, mids), ("greatest", highs, mids)],
-                                      "moment (kNm/m)", "level (m)")))
+            charts.append((L("{wall}: vertical bending moment against level (envelope along the wall), {stage}",
+                             wall=plate.name, stage=last.name),
+                           _svg_chart([(L("least"), lows, mids), (L("greatest"), highs, mids)],
+                                      L("moment (kNm/m)"), L("level (m)"))))
         for name, pf in last.pile_forces.items():
             N = -pf["resultants"][:, 0]
-            charts.append((f"{name}: axial force along the pile, {last.name}",
-                           _svg_chart([("compression (kN)", N, pf["s"])], "kN", "distance from head (m)",
+            charts.append((L("{pile}: axial force along the pile, {stage}", pile=name, stage=last.name),
+                           _svg_chart([(L("compression (kN)"), N, pf["s"])], "kN", L("distance from head (m)"),
                                       invert_y=True)))
     if charts:
-        body.append("<h2>Charts</h2><div class='charts'>" + "".join(
+        body.append(f"<h2>{L('Charts')}</h2><div class='charts'>" + "".join(
             f"<figure>{svg}<figcaption>{html.escape(cap)}</figcaption></figure>" for cap, svg in charts) + "</div>")
-    body.append("<h2>3D results</h2><p class='muted'>Choose a stage and a field; drag to orbit, scroll to zoom, "
-                "right-drag to pan. The cut clips the ground and shows the field on the section.</p>"
-                "<div class='l3v' id='l3v'></div>")
+    body.append(f"<h2>{L('3D results')}</h2><p class='muted'>"
+                + L("Choose a stage and a field; drag to orbit, scroll to zoom, right-drag to pan. "
+                    "The cut clips the ground and shows the field on the section.")
+                + "</p><div class='l3v' id='l3v'></div>")
     with open(path, "w", encoding="utf-8") as fh:
-        fh.write(_page(title, "\n".join(body), viewer_data(problem, results, title), offline))
+        fh.write(_page(title, "\n".join(body), viewer_data(problem, results, title, lang), offline, lang))
     return str(path)

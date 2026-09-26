@@ -183,7 +183,7 @@ def _run(args) -> int:
         json.dump(summary, fh, indent=2)
     from .io.viewer import write_report
 
-    write_report(os.path.join(args.out, "report.html"), problem, results, title=site.name)
+    write_report(os.path.join(args.out, "report.html"), problem, results, title=site.name, lang=args.lang)
     print(f"results in {args.out}/ (report.html in a browser; stage*.vtu and plates*.vtu for ParaView; "
           "summary.json)")
     return 0 if all(s["converged"] for s in summary) else 1
@@ -288,6 +288,7 @@ def main(argv=None) -> int:
     p.add_argument("site", help="site description (.json)")
     p.add_argument("-o", "--out", default="lythos3d_run", help="output directory")
     p.add_argument("--no-fos", action="store_true", help="skip the factor of safety stage")
+    p.add_argument("--lang", choices=("en", "tr"), default="en", help="language of the report (tr: Türkçe)")
     p.add_argument("--tolerance", type=float, default=1e-3, help="relative out-of-balance force")
     p.add_argument("--solver", default="auto", choices=("auto", "pardiso", "superlu"))
     p.add_argument("-v", "--verbose", action="store_true")

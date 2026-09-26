@@ -175,6 +175,10 @@ exaggerated.
 
 ![The model in 3D, before meshing](docs/images/model3d.png)
 
+The interface, the report and its 3D viewer are in English or Turkish (the
+menu next to **3D view**; the browser's language by default). `lythos3d run
+--lang tr` writes a Turkish report.
+
 `lythos3d editor` writes the same plan editor as a standalone file: a single HTML file that works
 offline. In it you draw the model extent, boreholes, pits, walls, fills,
 area loads, anchors and piles, enter the soils and the water level, and save

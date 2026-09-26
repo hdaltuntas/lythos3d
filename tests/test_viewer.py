@@ -160,3 +160,11 @@ def test_the_3d_view_gets_the_soil_surfaces_meshing_uses():
     X, Y = np.meshgrid(xs, ys)
     exact = site.profile.tops(np.column_stack([X.ravel(), Y.ravel()]))
     assert np.allclose(tops.reshape(site.profile.n_soils, -1).T, exact)
+
+
+def test_the_report_speaks_turkish(analysed, tmp_path):
+    problem, results = analysed
+    report = open(write_report(tmp_path / "rapor.html", problem, results, lang="tr")).read()
+    assert "<h2>Aşamalar</h2>" in report and '<html lang="tr">' in report
+    data = _data(report)
+    assert "yer değiştirme |u| (mm)" in data["stages"][-1]["fields"] and data["labels"]["Stage"] == "Aşama"
