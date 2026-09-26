@@ -88,13 +88,16 @@ class Solver:
         self.verbose = verbose
         self.materials = dict(problem.materials)
         #: Strength reduction needs a tighter tolerance than construction
-        #: stages.  Near collapse, an out-of-balance force of a few tenths of a
-        #: percent is enough to hold a mechanism that has no true equilibrium:
-        #: at 2e-3 the benchmark slope's factor of safety came out 1.438 by
-        #: full Newton and 1.459 by modified Newton, depending only on which
-        #: found such a pseudo-equilibrium.  From 5e-4 down both give 1.430
-        #: (2D Lythos: 1.430), and 2e-4 changes nothing.
-        self.ssr_tolerance = 5e-4
+        #: stages.  Near collapse, an out-of-balance force of a fraction of a
+        #: percent of the whole model's load can hold a mechanism that has no
+        #: true equilibrium, and the more so the larger the model is next to
+        #: the mechanism.  At 2e-3 the benchmark slope came out 1.438 by full
+        #: Newton and 1.459 by modified Newton, and the example pit 1.32; at
+        #: 2e-4 they are 1.430 (2D Lythos: 1.430) and 1.18, and halving it
+        #: again changes neither.  A vertical cut with a tension cut-off was
+        #: still moving at 2e-4 (0.96, 0.92, 0.90 at 5e-4, 2e-4, 1e-4):
+        #: for a brittle mechanism, check the answer at a tighter tolerance.
+        self.ssr_tolerance = 2e-4
         #: a strength reduction trial that has taken this many times the
         #: iterations of the hardest successful one is taken to have failed
         self.ssr_budget_factor = 8
