@@ -189,6 +189,12 @@ def _run(args) -> int:
     return 0 if all(s["converged"] for s in summary) else 1
 
 
+def _gui(args) -> int:
+    from .gui import serve
+
+    return serve(args.host, args.port, not args.no_browser, args.out)
+
+
 def _editor(args) -> int:
     import shutil
 
@@ -256,6 +262,13 @@ def main(argv=None) -> int:
     p.add_argument("-o", "--out", help="write the mesh as .vtu, with soils, lifts and element quality")
     p.set_defaults(func=_mesh)
 
+    p = sub.add_parser("gui", help="the interface in a browser: draw a site, analyse it, see the report")
+    p.add_argument("--port", type=int, default=8778)
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--no-browser", action="store_true")
+    p.add_argument("-o", "--out", help="folder for the analyses (default ~/lythos3d_runs)")
+    p.set_defaults(func=_gui)
+
     p = sub.add_parser("editor", help="write the plan editor: draw a site in the browser")
     p.add_argument("-o", "--out", default="lythos3d_editor.html")
     p.set_defaults(func=_editor)
@@ -286,6 +299,7 @@ def _welcome(parser) -> int:
     print(f"Lythos 3D {__version__}: 3D finite element analysis for geotechnical engineering\n")
     print("Give a command, for example:\n")
     examples = [
+        ("gui", "the interface in a browser: draw a site, run it, see the report"),
         ("info", "versions, and which linear solvers are available"),
         ("demo -o out", "a footing on layered ground, written for ParaView (a minute or two)"),
         ("site-example -o site.json", "an example site: boreholes, a walled and strutted pit"),
@@ -295,8 +309,8 @@ def _welcome(parser) -> int:
     ]
     for cmd, what in examples:
         print(f"  lythos3d {cmd:28s} {what}")
-    print("\nFrom a clone, `python main.py <command>` does the same.  In PyCharm, put the command")
-    print("(for example `info`, or `run site.json -o run`) in Run > Edit Configurations > Parameters.\n")
+    print("\nFrom a clone, `python main.py` starts the interface, and `python main.py <command>`")
+    print("runs a command.\n")
     parser.print_help()
     return 0
 

@@ -116,7 +116,8 @@ lythos3d pit --trench -o trench  # the same section as a long trench, in plane s
 lythos3d site-example -o site.json   # boreholes, dipping layers, a walled and strutted pit
 lythos3d site-example --water -o wet.json   # the same below the water table, pumped dry as dug
 lythos3d site-example --seepage -o flow.json   # the same with the flow into the pit solved
-lythos3d editor -o editor.html       # draw a site in the browser and save its site.json
+python main.py                       # the interface in a browser: draw, run, see the report
+lythos3d editor -o editor.html       # the plan editor alone, as a file
 lythos3d dxf plan.dxf                # list the layers of a DXF plan, to use its outlines
 lythos3d mesh site.json -o mesh.vtu  # mesh it; report element quality per soil and lift
 lythos3d run site.json -o run        # stage by stage, then the factor of safety -> run/report.html
@@ -146,7 +147,14 @@ settlement under the centre of the footing: 14.8 mm
 
 ## In the browser
 
-`lythos3d editor` writes a plan editor: a single HTML file that works
+`python main.py` with no arguments (or `lythos3d gui`) starts the interface
+in the browser, as in 2D Lythos. The interface is the plan editor, served
+locally, with example sites and a **Run analysis** button. The site drawn is
+meshed and analysed stage by stage, the progress is shown as it goes, and
+the report opens when it is done. Each analysis keeps its `site.json`,
+report and ParaView files in a folder of its own under `~/lythos3d_runs`.
+
+`lythos3d editor` writes the same plan editor as a standalone file: a single HTML file that works
 offline. In it you draw the model extent, boreholes, pits, walls, fills,
 area loads, anchors and piles, enter the soils and the water level, and save
 a `site.json` that `lythos3d run` takes as it is. A DXF plan can be loaded

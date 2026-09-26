@@ -69,13 +69,21 @@ svg text { font: 11px system-ui, sans-serif; fill: var(--muted); }
   <span id="tools"></span>
   <span class="sep"></span>
   <button id="fit" title="fit the drawing to the view">Fit</button>
+  <span id="server" hidden>
+    <span class="sep"></span>
+    <select id="examples" title="load an example site"><option value="">Examples…</option></select>
+    <label class="muted" title="find the factor of safety at the end"><input type="checkbox" id="fos" checked> FoS</label>
+    <button id="run" class="on">Run analysis</button>
+    <button id="report" disabled>Report</button>
+    <span id="runstate" class="muted"></span>
+  </span>
   <input type="file" id="file" accept=".json,application/json" hidden>
   <input type="file" id="dxffile" accept=".dxf" hidden>
 </header>
 <main>
   <div id="plan"><svg id="svg"></svg><div id="hint"></div><div id="status"></div></div>
   <aside>
-    <div class="tabs"><button data-tab="item" class="on">Item</button><button data-tab="soils">Soils</button><button data-tab="site">Site</button><button data-tab="check">Check</button></div>
+    <div class="tabs"><button data-tab="item" class="on">Item</button><button data-tab="soils">Soils</button><button data-tab="site">Site</button><button data-tab="check">Check</button><button data-tab="log" id="logtab" hidden>Run</button></div>
     <div class="pane" id="pane"></div>
   </aside>
 </main>
@@ -158,7 +166,10 @@ function draw() {
     const e = el(closed ? "polygon" : "polyline", {points: points(item.polygon || item.path || item.area), fill: closed ? colour : "none", "fill-opacity": closed ? 0.12 : 0,
       stroke: colour, "stroke-width": isSel ? 3 : (kind === "wall" ? 2.5 : 1.8), "stroke-dasharray": dash || "", class: "item"});
     e.addEventListener("pointerdown", ev => { if (tool === "select") { ev.stopPropagation(); select(kind, item); startDragItem(ev, item.polygon || item.path || item.area); } });
-    const c = (item.polygon || item.path || item.area)[0], s = toScreen(c[0], c[1]);
+    const pts = item.polygon || item.path || item.area;
+    // a wall is labelled mid-way along its first run, clear of the pit it may share a corner with
+    const c = kind === "wall" && pts.length > 1 ? [(pts[0][0] + pts[1][0]) / 2, (pts[0][1] + pts[1][1]) / 2] : pts[0];
+    const s = toScreen(c[0], c[1]);
     el("text", {x: s[0] + 4, y: s[1] - 4}).textContent = item.name;
     if (isSel) handles(item.polygon || item.path || item.area);
   };
@@ -280,7 +291,7 @@ function showTab(t) {
   if (t) tab = t;
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
   pane.innerHTML = "";
-  ({item: itemPane, soils: soilsPane, site: sitePane, check: checkPane})[tab]();
+  ({item: itemPane, soils: soilsPane, site: sitePane, check: checkPane, log: logPane})[tab]();
 }
 function field(form, label, value, onchange, type = "number", options = null) {
   const l = document.createElement("label"); l.textContent = label; form.appendChild(l);
@@ -505,7 +516,54 @@ TOOLS.forEach(([t, label]) => {
 toolbar.firstChild.click();
 new ResizeObserver(draw).observe(plan);
 window.addEventListener("beforeunload", ev => { if (Object.values(LISTS).some(k => site[k].length)) { ev.preventDefault(); } });
-fit(); showTab();
+// ------------------------------------------------ served by `python main.py`
+// Opened from the local server (rather than as a file), the editor can load
+// the examples, run the analysis and show its report.
+let runState = null, polling = null;
+function logPane() {
+  const st = runState;
+  if (!st) { pane.innerHTML = '<p class="muted">No analysis yet. Draw a site (or load an example) and press Run analysis.</p>'; return; }
+  const [i, n, name] = st.progress, pct = n ? Math.round(100 * i / n) : 0;
+  pane.innerHTML = `<div class="msg ${st.status === "failed" ? "bad" : st.status === "done" ? "ok" : ""}">${
+    st.status === "running" ? `Running: ${name} (${i} of ${n} stages done, ${st.seconds} s)` :
+    st.status === "done" ? `Done in ${st.seconds} s.` : st.status === "failed" ? `Stopped: ${st.error}` : ""}</div>` +
+    `<div style="height:6px;background:var(--line);border-radius:3px;margin:8px 0"><div style="height:6px;width:${pct}%;background:var(--accent);border-radius:3px"></div></div>` +
+    (st.folder ? `<p class="muted">Files: ${st.folder}</p>` : "") +
+    `<pre style="white-space:pre-wrap;font-size:12px">${st.log.map(l => l.replace(/</g, "&lt;")).join("\n")}</pre>`;
+}
+async function poll() {
+  try {
+    runState = await (await fetch("api/status")).json();
+    const rs = document.getElementById("runstate");
+    rs.textContent = runState.status === "running" ? `${runState.progress[2]}…` : runState.status === "done" ? "done" : runState.status === "failed" ? "failed" : "";
+    document.getElementById("report").disabled = !runState.report;
+    document.getElementById("run").disabled = runState.status === "running";
+    if (tab === "log") logPane();
+    if (runState.status !== "running" && polling) { clearInterval(polling); polling = null; if (runState.report) window.open("report", "_blank"); }
+  } catch (e) { /* the server has stopped */ }
+}
+async function serverMode() {
+  let list;
+  try { const r = await fetch("api/examples"); if (!r.ok) return; list = await r.json(); } catch (e) { return; }
+  document.getElementById("server").hidden = false; document.getElementById("logtab").hidden = false;
+  const ex = document.getElementById("examples");
+  list.forEach(e => { const o = new Option(e.name, e.name); o.title = e.description; ex.add(o); });
+  ex.onchange = async () => {
+    if (!ex.value) return;
+    if (Object.values(LISTS).some(k => site[k].length) && !confirm("Replace the site you have drawn with the example?")) { ex.value = ""; return; }
+    site = fromJSON(await (await fetch(`api/example?name=${encodeURIComponent(ex.value)}`)).json()); sel = null; ex.value = ""; fit(); showTab("item");
+  };
+  document.getElementById("run").onclick = async () => {
+    const bad = problems(); if (bad.length) { showTab("check"); return; }
+    const r = await fetch("api/run", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({site: toJSON(), fos: document.getElementById("fos").checked})});
+    const d = await r.json(); if (!d.ok) { alert(d.error); return; }
+    showTab("log"); if (!polling) polling = setInterval(poll, 1000); poll();
+  };
+  document.getElementById("report").onclick = () => window.open("report", "_blank");
+  poll();
+}
+fit(); showTab(); serverMode();
 </script>
 </body>
 </html>
