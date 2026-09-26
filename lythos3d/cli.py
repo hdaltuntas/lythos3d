@@ -167,7 +167,7 @@ def _run(args) -> int:
         for name, force in r.bar_forces.items():
             print(f"    {name}: {force:.0f} kN")
         if r.flows and stage.kind != "ssr":
-            print(f"    seepage: {r.flows['in']:.3g} in, pumped from the pit {r.flows['pumped']:.3g} "
+            print(f"    seepage: {r.flows['in'] or 0.0:.3g} in, pumped from the pit {r.flows['pumped'] or 0.0:.3g} "
                   f"(units of k times m2)")
         for name, pf in r.pile_forces.items():
             N = pf["resultants"][:, 0]
