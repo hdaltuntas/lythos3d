@@ -120,6 +120,20 @@ class Solver:
         #: iterations of the hardest successful one is taken to have failed
         self.ssr_budget_factor = 8
         self.ssr_min_budget = 200
+        #: load steps a strength reduction trial takes from the last one
+        self.ssr_increments = 6
+        #: keep the last factorisation from one strength reduction trial to
+        #: the next (the structure is the same; modified Newton refactorises
+        #: when it stops helping)
+        self.ssr_keep_factorisation = False
+        #: the factor of safety is bracketed to within this
+        self.ssr_bracket = 0.01
+        #: smallest step, as a fraction of the first, before a trial gives up
+        self.ssr_min_step = 1.0 / 64.0
+        #: called with a line of text as the analysis goes - every Newton
+        #: iteration, every strength reduction trial - by an interface that
+        #: shows progress; it may raise to stop the analysis
+        self.monitor = None
         self.results: list[StageResult] = []
         self._u = np.zeros(problem.n_dof)
         self._u_offset = np.zeros(problem.n_dof)
@@ -275,11 +289,14 @@ class Solver:
             self._u, self._state = anchor_u.copy(), anchor_state.copy()
             budget = max(self.ssr_min_budget, self.ssr_budget_factor * max(successful, default=25))
             started = time.perf_counter()
-            res = self._newton(stage, active, max(stage.increments, 6), f"SRF {srf:.3f}", budget)
+            res = self._newton(stage, active, self.ssr_increments, f"SRF {srf:.3f}", budget)
             if res.converged:
                 successful.append(len(res.iterations))
             dmax = float(np.linalg.norm(self._nodal(self._u - reference), axis=1).max())
             curve.append((srf, dmax))
+            if self.monitor is not None:
+                self.monitor(f"strength reduction: factor {srf:.3f} "
+                             f"{'holds' if res.converged else 'fails'} ({len(curve)} trials so far)")
             if self.verbose:
                 print(f"    SRF {srf:.3f}: {'equilibrium' if res.converged else 'no equilibrium'},"
                       f" {1000 * dmax:.1f} mm, {len(res.iterations)} iterations,"
@@ -308,7 +325,7 @@ class Solver:
         else:
             lo = last_ok
             for _ in range(10):
-                if hi - lo <= 0.01:
+                if hi - lo <= self.ssr_bracket:
                     break
                 mid = 0.5 * (lo + hi)
                 if attempt(mid):
@@ -341,7 +358,8 @@ class Solver:
         f_int0 = self._internal(u_committed, u_committed, state_committed, active, False)[0]
         # a new stage has new restraints and elements; never start it on the
         # factorisation of the last one
-        self.linear.forget()
+        if not (stage.kind == SSR and self.ssr_keep_factorisation):
+            self.linear.forget()
         modified = self.modified_newton
         tol = min(self.tol, self.ssr_tolerance) if stage.kind == SSR else self.tol
 
@@ -351,7 +369,7 @@ class Solver:
         # strength reduction trial cost ten times a successful one.
         lam, message, cuts = 0.0, "", 0
         dlam = ceiling = 1.0 / max(increments, 1)
-        min_dlam = dlam / 64.0
+        min_dlam = dlam * (self.ssr_min_step if stage.kind == SSR else 1.0 / 64.0)
         scale = max(np.linalg.norm(f_ext), np.linalg.norm(f_int0), 1e-8)
 
         while lam < 1.0 - 1e-10:
@@ -372,6 +390,9 @@ class Solver:
                 r[fixed] = 0.0
                 rn = float(np.linalg.norm(r))
                 logs.append(IterationLog(len(logs), it, rn / scale))
+                if self.monitor is not None:
+                    self.monitor(f"{label}: {100 * trial:.0f}% of the load, iteration {it + 1}, "
+                                 f"imbalance {rn / scale:.1e} (target {tol:.0e})")
                 if rn / scale < tol:
                     ok = True
                     break

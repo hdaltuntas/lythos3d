@@ -72,8 +72,12 @@ svg text { font: 11px system-ui, sans-serif; fill: var(--muted); }
   <span id="server" hidden>
     <span class="sep"></span>
     <select id="examples" title="load an example site"><option value="">Examples…</option></select>
-    <label class="muted" title="find the factor of safety at the end"><input type="checkbox" id="fos" checked> FoS</label>
+    <select id="fineness" title="element size: coarse runs several times faster, fine is more accurate">
+      <option value="1.6">coarse mesh</option><option value="1" selected>normal mesh</option><option value="0.7">fine mesh</option></select>
+    <select id="fos" title="strength reduction at the end: it solves the model again and again, and takes several times as long as the construction stages">
+      <option value="0" selected>no factor of safety</option><option value="0.03">factor of safety, quick (±0.03)</option><option value="0.01">factor of safety, precise (±0.01)</option></select>
     <button id="run" class="on">Run analysis</button>
+    <button id="stop" hidden>Stop</button>
     <button id="report" disabled>Report</button>
     <span id="runstate" class="muted"></span>
   </span>
@@ -519,13 +523,14 @@ window.addEventListener("beforeunload", ev => { if (Object.values(LISTS).some(k 
 // ------------------------------------------------ served by `python main.py`
 // Opened from the local server (rather than as a file), the editor can load
 // the examples, run the analysis and show its report.
-let runState = null, polling = null;
+let runState = null, polling = null, solverWarning = "";
 function logPane() {
   const st = runState;
   if (!st) { pane.innerHTML = '<p class="muted">No analysis yet. Draw a site (or load an example) and press Run analysis.</p>'; return; }
   const [i, n, name] = st.progress, pct = n ? Math.round(100 * i / n) : 0;
-  pane.innerHTML = `<div class="msg ${st.status === "failed" ? "bad" : st.status === "done" ? "ok" : ""}">${
-    st.status === "running" ? `Running: ${name} (${i} of ${n} stages done, ${st.seconds} s)` :
+  pane.innerHTML = (solverWarning ? `<div class="msg bad">${solverWarning}</div>` : "") +
+    `<div class="msg ${st.status === "failed" ? "bad" : st.status === "done" ? "ok" : ""}">${
+    st.status === "running" ? `Running: ${name} (${i} of ${n} stages done, ${st.seconds} s)<br><span class="muted">${(st.detail || "").replace(/</g, "&lt;")}</span>` :
     st.status === "done" ? `Done in ${st.seconds} s.` : st.status === "failed" ? `Stopped: ${st.error}` : ""}</div>` +
     `<div style="height:6px;background:var(--line);border-radius:3px;margin:8px 0"><div style="height:6px;width:${pct}%;background:var(--accent);border-radius:3px"></div></div>` +
     (st.folder ? `<p class="muted">Files: ${st.folder}</p>` : "") +
@@ -538,6 +543,7 @@ async function poll() {
     rs.textContent = runState.status === "running" ? `${runState.progress[2]}…` : runState.status === "done" ? "done" : runState.status === "failed" ? "failed" : "";
     document.getElementById("report").disabled = !runState.report;
     document.getElementById("run").disabled = runState.status === "running";
+    document.getElementById("stop").hidden = runState.status !== "running";
     if (tab === "log") logPane();
     if (runState.status !== "running" && polling) { clearInterval(polling); polling = null; if (runState.report) window.open("report", "_blank"); }
   } catch (e) { /* the server has stopped */ }
@@ -546,6 +552,14 @@ async function serverMode() {
   let list;
   try { const r = await fetch("api/examples"); if (!r.ok) return; list = await r.json(); } catch (e) { return; }
   document.getElementById("server").hidden = false; document.getElementById("logtab").hidden = false;
+  try {
+    const sv = await (await fetch("api/solver")).json();
+    if (sv.backend !== "pardiso") {
+      solverWarning = "pypardiso is not installed, so the slow SuperLU solver is used: a site of useful size may take hours. Stop the interface and run: pip install pypardiso";
+      document.getElementById("runstate").textContent = "slow solver - see Run tab";
+    }
+  } catch (e) { /* older server */ }
+  document.getElementById("stop").onclick = () => fetch("api/stop", {method: "POST"});
   const ex = document.getElementById("examples");
   list.forEach(e => { const o = new Option(e.name, e.name); o.title = e.description; ex.add(o); });
   ex.onchange = async () => {
@@ -556,7 +570,8 @@ async function serverMode() {
   document.getElementById("run").onclick = async () => {
     const bad = problems(); if (bad.length) { showTab("check"); return; }
     const r = await fetch("api/run", {method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({site: toJSON(), fos: document.getElementById("fos").checked})});
+      body: JSON.stringify({site: toJSON(), fos: Number(document.getElementById("fos").value),
+                            fineness: Number(document.getElementById("fineness").value)})});
     const d = await r.json(); if (!d.ok) { alert(d.error); return; }
     showTab("log"); if (!polling) polling = setInterval(poll, 1000); poll();
   };

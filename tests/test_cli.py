@@ -45,3 +45,29 @@ def test_main_py_without_arguments_starts_the_interface():
 
 def test_info():
     assert main(["info"]) == 0
+
+
+def test_the_interface_runs_an_analysis_shows_its_progress_and_stops_on_request(tmp_path):
+    """Run an example through the server, watch the monitor report iterations, then stop it."""
+    import time
+
+    import pytest
+
+    pytest.importorskip("gmsh")
+    from lythos3d.gui import Session
+    from lythos3d.io.site_json import site_to_dict
+    from lythos3d.examples import walled_pit
+
+    session = Session(str(tmp_path))
+    ok, _ = session.start(site_to_dict(walled_pit(4.0)), 0.03, fineness=1.0)
+    assert ok
+    assert not session.start({}, False)[0]                       # one analysis at a time
+    deadline = time.time() + 300
+    while "iteration" not in session.state()["detail"] and time.time() < deadline:
+        time.sleep(0.5)
+    state = session.state()
+    assert "iteration" in state["detail"] and "linear solver" in state["log"][0]
+    session.stop()
+    while session.state()["status"] == "running" and time.time() < deadline:
+        time.sleep(0.5)
+    assert session.state()["status"] == "failed" and session.state()["error"] == "stopped"

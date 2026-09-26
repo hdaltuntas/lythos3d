@@ -45,6 +45,10 @@ def examples() -> dict:
     }
 
 
+class Cancelled(Exception):
+    """Raised inside the solver's monitor when the page asks to stop."""
+
+
 class Session:
     """The one analysis this server knows about."""
 
@@ -58,10 +62,13 @@ class Session:
         self.folder = None
         self.error = ""
         self.started = 0.0
+        self.detail = ""
+        self.cancel = False
 
     def state(self) -> dict:
         with self.lock:
             return {"status": self.status, "log": self.log[-200:], "progress": list(self.progress),
+                    "detail": self.detail,
                     "report": self.report is not None, "folder": self.folder, "error": self.error,
                     "seconds": round(time.time() - self.started, 1) if self.started else 0.0}
 
@@ -69,16 +76,28 @@ class Session:
         with self.lock:
             self.log.append(line)
 
-    def start(self, site_dict: dict, fos: bool) -> tuple[bool, str]:
+    def start(self, site_dict: dict, fos, fineness: float = 1.0) -> tuple[bool, str]:
         with self.lock:
             if self.status == "running":
                 return False, "an analysis is already running"
             self.status, self.log, self.report, self.error = "running", [], None, ""
             self.progress, self.started, self.folder = (0, 0, "checking the site"), time.time(), None
-        threading.Thread(target=self._run, args=(site_dict, fos), daemon=True).start()
+            self.detail, self.cancel = "", False
+        threading.Thread(target=self._run, args=(site_dict, fos, fineness), daemon=True).start()
         return True, ""
 
-    def _run(self, site_dict: dict, fos: bool) -> None:
+    def stop(self) -> None:
+        with self.lock:
+            self.cancel = True
+
+    def _monitor(self, line: str) -> None:
+        with self.lock:
+            self.detail = line
+            if self.cancel:
+                raise Cancelled()
+
+    def _run(self, site_dict: dict, fos, fineness: float = 1.0) -> None:
+        """``fos`` is False, or the width to bracket the factor of safety to (True: 0.01)."""
         try:
             import numpy as np
 
@@ -87,8 +106,21 @@ class Session:
             from .io.viewer import write_report
             from .io.vtu import write_plates, write_stage
 
+            from .core.assembly import LinearSolver
+
             site = site_from_dict(site_dict)
+            # a coarser or finer mesh than the site asks for, from the interface
+            site.mesh_size *= fineness
+            for exc in site.excavations:
+                if exc.mesh_size:
+                    exc.mesh_size *= fineness
             stages = [s for s in site.stages if fos or s.kind != "ssr"]
+            backend = LinearSolver("auto").backend
+            if backend == "pardiso":
+                self.say("linear solver: PARDISO")
+            else:
+                self.say("WARNING: pypardiso is not installed, so the slow SuperLU solver is used; "
+                         "a site of useful size may take hours.  Install it: pip install pypardiso")
             stamp = time.strftime("%Y%m%d-%H%M%S")
             safe = "".join(c if c.isalnum() or c in "-_" else "_" for c in site.name)[:40] or "site"
             folder = os.path.join(self.out_root, f"{stamp}-{safe}")
@@ -99,8 +131,12 @@ class Session:
             self.say(f"meshing {site.name}")
             self.progress = (0, len(stages), "meshing")
             problem = site.build()
-            self.say(f"{problem.mesh.n_elements} elements, {problem.n_dof} equations")
+            self.say(f"{problem.mesh.n_elements} elements, {problem.n_dof} equations "
+                     f"(mesh size {site.mesh_size:g} m)")
             solver = Solver(problem)
+            solver.monitor = self._monitor
+            if fos and fos is not True:
+                solver.ssr_bracket = float(fos)
             results = []
             for k, stage in enumerate(stages):
                 with self.lock:
@@ -129,6 +165,11 @@ class Session:
                 self.status = "done" if all(r.converged for r in results) else "failed"
                 if self.status == "failed":
                     self.error = "a stage did not converge; the report shows how far it got"
+        except Cancelled:
+            with self.lock:
+                self.status = "failed"
+                self.error = "stopped"
+                self.log.append("stopped at your request")
         except Exception as err:                                   # shown in the page
             with self.lock:
                 self.status = "failed"
@@ -161,6 +202,10 @@ def make_handler(session: Session):
                 self._send(200, _FAVICON, "image/svg+xml")
             elif url.path == "/api/status":
                 self._json(session.state())
+            elif url.path == "/api/solver":
+                from .core.assembly import LinearSolver
+
+                self._json({"backend": LinearSolver("auto").backend})
             elif url.path == "/api/examples":
                 self._json([{"name": k, "description": v[0]} for k, v in examples().items()])
             elif url.path == "/api/example":
@@ -183,13 +228,19 @@ def make_handler(session: Session):
 
         def do_POST(self):
             url = urlparse(self.path)
+            if url.path == "/api/stop":
+                session.stop()
+                return self._json({"ok": True})
             if url.path != "/api/run":
                 return self._send(404, b"not found", "text/plain")
             try:
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
             except ValueError:
                 return self._json({"ok": False, "error": "the request was not JSON"}, 400)
-            ok, why = session.start(body.get("site", {}), bool(body.get("fos", True)))
+            fos = body.get("fos", False)
+            fos = float(fos) if isinstance(fos, (int, float)) and not isinstance(fos, bool) and fos > 0 else bool(fos)
+            ok, why = session.start(body.get("site", {}), fos,
+                                    float(body.get("fineness", 1.0)))
             self._json({"ok": ok, "error": why}, 200 if ok else 409)
 
     return Handler
