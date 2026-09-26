@@ -144,6 +144,10 @@ def write_stage(path: str | os.PathLike, problem, result) -> str:
         nodal_p *= total / np.maximum(count, 1.0)
         point_data["pore_pressure"] = nodal_p
         point_data["total_stress"] = nodal_stress - nodal_p[:, None] * np.array([1, 1, 1, 0, 0, 0], float)
+    excess = getattr(result, "excess_pore_pressure", None)
+    if excess is not None and np.any(excess):
+        nodal_e = ce.nodal_average(np.where(np.repeat(active, ngp), excess, 0.0)[:, None], mesh.n_nodes)[:, 0]
+        point_data["excess_pore_pressure"] = nodal_e * total / np.maximum(count, 1.0)
 
     cell_extra = {}
     head = getattr(result, "head", None)

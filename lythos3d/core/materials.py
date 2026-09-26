@@ -24,6 +24,9 @@ import numpy as np
 
 from .elements import elastic_matrix
 
+DRAINED = "drained"
+UNDRAINED = "undrained"
+
 #: tensor indices of the six Voigt components
 VOIGT_PAIRS = ((0, 0), (1, 1), (2, 2), (0, 1), (1, 2), (2, 0))
 
@@ -115,25 +118,32 @@ class MaterialState:
     #: embedded piles: shaft springs (n, 6) and tip springs (m, 2)
     embedded: np.ndarray | None = None
     tips: np.ndarray | None = None
+    #: excess pore pressure (n,), compression positive, built up where the
+    #: soil is loaded undrained
+    excess: np.ndarray | None = None
 
     @classmethod
     def zeros(cls, n: int) -> "MaterialState":
-        return cls(np.zeros((n, 6)), np.zeros((n, 6)), np.zeros(n), np.zeros(n, bool))
+        return cls(np.zeros((n, 6)), np.zeros((n, 6)), np.zeros(n), np.zeros(n, bool), excess=np.zeros(n))
 
     def copy(self) -> "MaterialState":
         return MaterialState(self.stress.copy(), self.plastic_strain.copy(),
                              self.eps_p_eq.copy(), self.yielding.copy(),
-                             *(None if a is None else a.copy() for a in (self.interface, self.embedded, self.tips)))
+                             *(None if a is None else a.copy()
+                               for a in (self.interface, self.embedded, self.tips, self.excess)))
 
     def take(self, idx) -> "MaterialState":
         return MaterialState(self.stress[idx], self.plastic_strain[idx],
-                             self.eps_p_eq[idx], self.yielding[idx])
+                             self.eps_p_eq[idx], self.yielding[idx],
+                             excess=None if self.excess is None else self.excess[idx])
 
     def put(self, idx, other: "MaterialState") -> None:
         self.stress[idx] = other.stress
         self.plastic_strain[idx] = other.plastic_strain
         self.eps_p_eq[idx] = other.eps_p_eq
         self.yielding[idx] = other.yielding
+        if other.excess is not None and self.excess is not None:
+            self.excess[idx] = other.excess
 
 
 # ---------------------------------------------------------------------------
@@ -146,7 +156,16 @@ class LinearElastic:
     ``K0`` is the ratio of horizontal to vertical stress the K0 procedure
     uses; by default it is the elastic value under zero lateral strain,
     ``nu / (1 - nu)``.  ``gamma_sat`` is the unit weight below the water
-    table (by default ``gamma``).  ``k`` is the horizontal permeability and
+    table (by default ``gamma``).
+
+    ``drainage="undrained"`` makes the soil undrained in every stage not
+    marked ``drained``: the pore water resists volume change with the bulk
+    modulus ``Kw/n`` that gives the soil skeleton plus water an undrained
+    Poisson's ratio ``nu_u``, and the excess pore pressure it carries is
+    tracked point by point.  Strength stays effective (undrained A); with
+    ``phi = 0`` and ``c = su`` it is the undrained strength (undrained B).
+
+    ``k`` is the horizontal permeability and
     ``k_v`` the vertical one (by default ``k``), for seepage; only their
     ratios matter to the heads, and flows come out in the units of ``k``
     times m2.
@@ -160,6 +179,11 @@ class LinearElastic:
     gamma_sat: float | None = None
     k: float = 1.0
     k_v: float | None = None
+    #: ``"drained"``, or ``"undrained"``: loaded faster than the water can
+    #: leave, so that volume change builds excess pore pressure
+    drainage: str = DRAINED
+    #: undrained Poisson's ratio, which sets the water's stiffness
+    nu_u: float = 0.495
 
     def __post_init__(self):
         if self.E <= 0:
@@ -170,6 +194,21 @@ class LinearElastic:
             raise ValueError(f"{self.name}: gamma_sat may not be negative")
         if self.k <= 0 or (self.k_v is not None and self.k_v <= 0):
             raise ValueError(f"{self.name}: permeabilities must be positive")
+        if self.drainage not in (DRAINED, UNDRAINED):
+            raise ValueError(f"{self.name}: drainage must be {DRAINED!r} or {UNDRAINED!r}")
+        if self.drainage == UNDRAINED and not self.nu < self.nu_u < 0.5:
+            raise ValueError(f"{self.name}: need nu < nu_u < 0.5")
+
+    @property
+    def undrained(self) -> bool:
+        return self.drainage == UNDRAINED
+
+    @property
+    def water_bulk_modulus(self) -> float:
+        """``Kw / n``: the pore water's share of the undrained bulk modulus."""
+        G = self.shear_modulus
+        Ku = 2.0 * G * (1.0 + self.nu_u) / (3.0 * (1.0 - 2.0 * self.nu_u))
+        return Ku - self.E / (3.0 * (1.0 - 2.0 * self.nu))
 
     @property
     def saturated_weight(self) -> float:
@@ -197,8 +236,11 @@ class LinearElastic:
         """Material with strength divided by ``srf``; elastic ones have none."""
         return self
 
-    def update(self, state: MaterialState, dstrain: np.ndarray):
-        """Advance ``state`` by ``dstrain``: ``(stress, tangent (n, 6, 6), new state)``."""
+    def update(self, state: MaterialState, dstrain: np.ndarray, z: np.ndarray | None = None):
+        """Advance ``state`` by ``dstrain``: ``(stress, tangent (n, 6, 6), new state)``.
+
+        ``z`` are the points' levels, for properties that vary with depth.
+        """
         D = self.elastic()
         stress = state.stress + dstrain @ D.T
         n = len(stress)
@@ -227,9 +269,15 @@ class MohrCoulomb(LinearElastic):
     #: tensile strength [kPa]; 0 carries no tension at all, None removes the
     #: cut-off so that the material may reach the apex at c cot(phi)
     tension_cutoff: float | None = 0.0
+    #: cohesion gained per metre below ``z_ref`` (kPa/m): an undrained
+    #: strength that grows with depth, as it does in a normally consolidated clay
+    c_inc: float = 0.0
+    z_ref: float = 0.0
 
     def __post_init__(self):
         super().__post_init__()
+        if self.c_inc < 0:
+            raise ValueError(f"{self.name}: c_inc may not be negative")
         if self.c < 0 or not 0.0 <= self.phi < 90.0:
             raise ValueError(f"{self.name}: need c >= 0 and 0 <= phi < 90")
         if self.psi > self.phi:
@@ -244,14 +292,23 @@ class MohrCoulomb(LinearElastic):
         phi_r = math.degrees(math.atan(math.tan(math.radians(self.phi)) / srf))
         psi_r = math.degrees(math.atan(math.tan(math.radians(self.psi)) / srf))
         cut = None if self.tension_cutoff is None else self.tension_cutoff / srf
-        return replace(self, c=self.c / srf, phi=phi_r, psi=min(psi_r, phi_r),
+        return replace(self, c=self.c / srf, c_inc=self.c_inc / srf, phi=phi_r, psi=min(psi_r, phi_r),
                        tension_cutoff=cut)
 
+    def cohesion(self, z: np.ndarray | None = None):
+        """Cohesion at levels ``z``: a number, or an array where it varies with depth."""
+        if not self.c_inc:
+            return self.c
+        if z is None:
+            raise ValueError(f"{self.name}: a cohesion that varies with depth needs the points' levels")
+        return self.c + self.c_inc * np.maximum(self.z_ref - np.asarray(z, float), 0.0)
+
     # ------------------------------------------------------------------ update
-    def update(self, state: MaterialState, dstrain: np.ndarray):
+    def update(self, state: MaterialState, dstrain: np.ndarray, z: np.ndarray | None = None):
         D = self.elastic()
         trial = state.stress + dstrain @ D.T
         n = len(trial)
+        c = self.cohesion(z)
         stress = trial.copy()
         tangent = np.broadcast_to(D, (n, 6, 6)).copy()
         plastic = np.zeros(n, bool)
@@ -260,15 +317,15 @@ class MohrCoulomb(LinearElastic):
         # never needed: screen them with closed-form principal values, and
         # solve the eigenproblem only where the trial stress is at or beyond
         # the surface.  The margin covers round-off in the closed form.
-        sphi, _spsi, k = self._params()
+        sphi, _spsi, k = self._params(c)
         v = principal_values(trial)
-        margin = 1e-8 * (np.abs(v).max(axis=1) + abs(k) + 1.0)
+        margin = 1e-8 * (np.abs(v).max(axis=1) + np.abs(k) + 1.0)
         near = (((1.0 + sphi) * v[:, 0] - (1.0 - sphi) * v[:, 2] - k > -margin)
-                | (v[:, 0] > self.tension_limit() - margin))
+                | (v[:, 0] > self.tension_limit(c) - margin))
         if near.any():
             idx = np.nonzero(near)[0]
             values, V = principal_stresses(trial[idx])
-            returned, D_principal, yielded = self._return_map(values)
+            returned, D_principal, yielded = self._return_map(values, c if np.ndim(c) == 0 else c[idx])
             if yielded.any():
                 p = idx[yielded]
                 plastic[p] = True
@@ -286,40 +343,45 @@ class MohrCoulomb(LinearElastic):
         new = MaterialState(stress, state.plastic_strain + dplastic, state.eps_p_eq + deq, plastic)
         return stress, tangent, new
 
-    def yield_function(self, stress: np.ndarray) -> np.ndarray:
+    def yield_function(self, stress: np.ndarray, z: np.ndarray | None = None) -> np.ndarray:
         """Mohr-Coulomb yield function, positive outside the surface."""
         s = principal_values(stress)
-        sphi, _spsi, k = self._params()
+        sphi, _spsi, k = self._params(self.cohesion(z))
         return (1.0 + sphi) * s[:, 0] - (1.0 - sphi) * s[:, 2] - k
 
     # ---------------------------------------------------------- principal space
-    def _params(self):
+    def _params(self, c=None):
         sphi = math.sin(math.radians(self.phi))
         spsi = math.sin(math.radians(self.psi))
         cphi = math.cos(math.radians(self.phi))
-        return sphi, spsi, 2.0 * self.c * cphi
+        return sphi, spsi, 2.0 * (self.c if c is None else c) * cphi
 
     def _elastic_principal(self) -> np.ndarray:
         lam = self.E * self.nu / ((1.0 + self.nu) * (1.0 - 2.0 * self.nu))
         return lam * np.ones((3, 3)) + 2.0 * self.shear_modulus * np.eye(3)
 
-    def tension_limit(self) -> float:
-        """Largest admissible major principal stress (tension positive)."""
-        apex = self.c / math.tan(math.radians(self.phi)) if self.phi > 1e-9 else math.inf
+    def tension_limit(self, c=None):
+        """Largest admissible major principal stress (tension positive); per point if ``c`` is."""
+        c = self.c if c is None else c
+        if self.phi > 1e-9:
+            apex = c / math.tan(math.radians(self.phi))
+        else:
+            apex = np.full(np.shape(c), math.inf) if np.ndim(c) else math.inf
         if self.tension_cutoff is None:
             return apex
-        return min(self.tension_cutoff, apex)
+        return np.minimum(self.tension_cutoff, apex) if np.ndim(c) else min(self.tension_cutoff, apex)
 
-    def _criteria(self):
+    def _criteria(self, c=None):
         """Yield planes as (normal, flow direction, offset) in sorted principal space.
 
         The Mohr-Coulomb pyramid contributes its main face and the two faces
         bounding the sorted sector: meeting the main face, f(s2, s3) gives the
         edge s1 = s2 and f(s1, s2) the edge s2 = s3.  The tension cut-off
-        contributes one plane per principal stress.
+        contributes one plane per principal stress.  The offsets are per
+        point where ``c`` is.
         """
-        sphi, spsi, k = self._params()
-        st = self.tension_limit()
+        sphi, spsi, k = self._params(c)
+        st = self.tension_limit(c)
         eye = np.eye(3)
         return {
             "main": (np.array([1.0 + sphi, 0.0, -1.0 + sphi]),
@@ -349,7 +411,7 @@ class MohrCoulomb(LinearElastic):
         ("t0", "t1", "t2"),
     )
 
-    def _return_map(self, s: np.ndarray):
+    def _return_map(self, s: np.ndarray, c=None):
         """Map sorted trial principal stresses back onto the yield surface.
 
         ``s`` holds s1 >= s2 >= s3.  For a given set of active planes the
@@ -358,12 +420,16 @@ class MohrCoulomb(LinearElastic):
         trying the candidate sets in turn.  Returns the principal stresses,
         the principal-space tangent (n, 3, 3) and which points yielded.
         """
-        crit = self._criteria()
+        crit = self._criteria(c)
         a_main, _b, k = crit["main"]
         De = self._elastic_principal()
         n = len(s)
-        st_max = self.tension_limit()
-        scale = max(abs(k), self.E * 1e-6, 1.0)
+        st_max = self.tension_limit(c)
+        # offsets per point (a cohesion varying with depth), or shared
+        k = np.broadcast_to(np.asarray(k, float), (n,))
+        st_max = np.broadcast_to(np.asarray(st_max, float), (n,))
+        crit = {name: (a, b, np.broadcast_to(np.asarray(off, float), (n,))) for name, (a, b, off) in crit.items()}
+        scale = max(float(np.abs(k).max()) if n else 0.0, self.E * 1e-6, 1.0)
         tol = 1e-10 * scale
 
         plastic = (s @ a_main - k > tol) | (s[:, 0] > st_max + tol)
@@ -374,6 +440,8 @@ class MohrCoulomb(LinearElastic):
 
         idx = np.nonzero(plastic)[0]
         trial = s[idx]
+        k_p, st_p = k[idx], st_max[idx]
+        no_cutoff = bool(np.all(np.isinf(st_p)))
         res = trial.copy()
         tang = np.broadcast_to(De, (len(idx), 3, 3)).copy()
         unsolved = np.ones(len(idx), bool)
@@ -381,21 +449,21 @@ class MohrCoulomb(LinearElastic):
         for names in self.ACTIVE_SETS:
             if not unsolved.any():
                 break
-            if st_max == math.inf and any(name.startswith("t") for name in names):
+            if no_cutoff and any(name.startswith("t") for name in names):
                 continue
             A = np.column_stack([crit[nm][0] for nm in names])
             B = np.column_stack([crit[nm][1] for nm in names])
-            offsets = np.array([crit[nm][2] for nm in names])
+            offsets = np.column_stack([crit[nm][2][idx] for nm in names])
             M = A.T @ De @ B
             if abs(np.linalg.det(M)) < 1e-12 * scale ** len(names):
                 continue
             Minv = np.linalg.inv(M)
             rows = np.nonzero(unsolved)[0]
-            lam = (trial[rows] @ A - offsets) @ Minv.T
+            lam = (trial[rows] @ A - offsets[rows]) @ Minv.T
             cand = trial[rows] - lam @ (De @ B).T
             ok = (np.all(lam >= -1e-9 * scale, axis=1)
-                  & (cand @ a_main - k <= 1e-7 * scale)
-                  & (cand[:, 0] <= st_max + 1e-7 * scale)
+                  & (cand @ a_main - k_p[rows] <= 1e-7 * scale)
+                  & (cand[:, 0] <= st_p[rows] + 1e-7 * scale)
                   & (cand[:, 0] >= cand[:, 1] - 1e-7 * scale)
                   & (cand[:, 1] >= cand[:, 2] - 1e-7 * scale))
             take = rows[ok]
@@ -408,8 +476,8 @@ class MohrCoulomb(LinearElastic):
             # the cut-off, where that is lower).  It carries no strength,
             # hence the token stiffness.
             sub = np.nonzero(unsolved)[0]
-            limit = st_max if math.isfinite(st_max) else float(np.min(trial[sub]))
-            res[sub] = limit
+            limit = np.where(np.isfinite(st_p[sub]), st_p[sub], trial[sub].min(axis=1))
+            res[sub] = limit[:, None]
             tang[sub] = self.residual_stiffness * De
 
         out[idx] = res

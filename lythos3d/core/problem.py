@@ -42,6 +42,12 @@ class Stage:
 
     ``water`` is the :class:`~lythos3d.core.water.WaterTable` from this stage
     on; ``None`` keeps the last one (the problem's own at the start).
+
+    ``drained`` treats every soil as drained in this stage, whatever its
+    ``drainage``, and lets the excess pore pressure built up so far drain
+    away: the soil then consolidates to the drained state (a long pause, as
+    PLAXIS's "ignore undrained behaviour").  Initial stages are always
+    drained.
     """
 
     name: str
@@ -56,6 +62,7 @@ class Stage:
     srf_min: float = 0.8
     srf_max: float = 3.0
     water: WaterTable | None = None
+    drained: bool = False
 
     def __post_init__(self):
         if self.kind not in (INITIAL, PLASTIC, SSR):

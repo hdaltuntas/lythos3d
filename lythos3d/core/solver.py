@@ -67,6 +67,9 @@ class StageResult:
     #: with seepage: total head at the nodes (NaN off the active ground),
     #: Darcy velocity at the Gauss points (n_points, 3), and the flows
     #: (``in``, ``out``, ``pumped``, ``seepage_face``) in units of k m2
+    #: excess pore pressure at the Gauss points from undrained loading
+    #: (included in ``pore_pressure``)
+    excess_pore_pressure: np.ndarray | None = None
     head: np.ndarray | None = None
     velocity: np.ndarray | None = None
     flows: dict = field(default_factory=dict)
@@ -124,6 +127,8 @@ class Solver:
         self._water = problem.water
         #: the pore pressure field that goes with it and the ground as it is
         self._field = None
+        self._undrained = True
+        self._gauss_z = problem.continuum.gauss_xyz[:, :, 2].ravel()
         self._active = np.ones(problem.mesh.n_elements, bool)
         for name in problem.absent:
             self._active &= ~problem.groups[name]
@@ -169,6 +174,12 @@ class Solver:
             elif bar_index[name] not in self._bar_reference:
                 self._bar_reference[bar_index[name]] = None
 
+        # undrained soil is undrained except in a stage marked drained (and
+        # the initial stresses); a drained stage lets the excess pore
+        # pressure go, and the soil consolidates under the load it carried
+        self._undrained = not (stage.drained or stage.kind == INITIAL)
+        if not self._undrained and self._state.excess is not None:
+            self._state.excess[:] = 0.0
         if stage.kind != SSR or self._field is None:
             # strength reduction changes neither the ground nor the water
             self._field = self.p.pore_field(self._water, active, installed=tuple(self._plate_reference))
@@ -187,7 +198,8 @@ class Solver:
         result.plate_forces, result.bar_forces = self._structure_forces(self._u)
         result.interface_tractions = self._interface_tractions(active)
         result.pile_forces = self._pile_forces()
-        result.pore_pressure = self._field.gauss
+        result.excess_pore_pressure = self._state.excess.copy()
+        result.pore_pressure = self._field.gauss + result.excess_pore_pressure
         result.head, result.velocity = self._field.head, self._field.velocity
         result.flows = dict(self._field.flows)
         result.seconds = time.perf_counter() - t0
@@ -462,9 +474,19 @@ class Solver:
         tangents = np.empty((p.n_points, 6, 6)) if tangent else None
         new_state = state_committed.copy() if return_state else None
         yielding = False
+        m = np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])
         for mat, gp in p.material_groups(self.materials):
-            s, t, ns = mat.update(state_committed.take(gp), dstrain[gp])
-            stress[gp] = s
+            committed = state_committed.take(gp)
+            s, t, ns = mat.update(committed, dstrain[gp], self._gauss_z[gp])
+            ns.excess = committed.excess
+            if self._undrained and getattr(mat, "undrained", False):
+                # the pore water resists the change of volume: excess pore
+                # pressure, and the water's stiffness in the tangent
+                kw = mat.water_bulk_modulus
+                ns.excess = committed.excess - kw * dstrain[gp, :3].sum(axis=1)
+                if tangent:
+                    t = t + kw * np.outer(m, m)
+            stress[gp] = s if ns.excess is None else s - ns.excess[:, None] * m
             if tangent:
                 tangents[gp] = t
                 yielding |= bool(ns.yielding.any())

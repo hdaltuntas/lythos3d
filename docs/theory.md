@@ -634,3 +634,62 @@ iterations: 40 at 0.7 m, 120 at 0.2 m and 470 at 0.05 m, on a 0.25 m mesh.
 A deeper wall lets less water into a pumped pit, and a permeable one lets
 in more. Below the toe the head is continuous: it differs by less than 0.3 m
 2 m either side of the wall at 3 m below its toe.
+
+## Undrained loading
+
+A clay loaded faster than its water can leave changes shape at constant
+volume, and the load it cannot take through the skeleton goes into the
+pore water as *excess* pore pressure. Lythos 3D models this as PLAXIS's
+undrained A and B do: effective stress throughout, with the water as a stiff
+bulk spring.
+
+**The water's stiffness.** A soil with `drainage="undrained"` gets, at every
+Gauss point, a pore water bulk modulus `Kw/n`. It is chosen so that skeleton
+and water together have the same shear modulus and an undrained Poisson's
+ratio `nu_u` (0.495):
+
+```
+Kw/n = 2G (1 + νu) / 3(1 − 2νu) − K'
+```
+
+A strain increment then raises the excess pore pressure by
+`Δpₑ = −(Kw/n) Δεv`, where compression is positive. The point's contribution
+to the internal force is `σ' − pₑ m`, and the tangent gains `(Kw/n) m mᵀ`.
+The effective stress still follows the soil's own model, so strength is
+effective:
+
+- *Undrained A:* effective `c'` and `φ'`. The undrained strength follows from
+  the stress path.
+- *Undrained B:* `φ = 0` and `c = su`. The strength is given directly and
+  may grow with depth (`c_inc` kPa per metre below `z_ref`). The
+  Mohr-Coulomb return map takes a cohesion per point for this.
+
+The excess pore pressure is history, carried with the rest of the material
+state. It is committed and rolled back with it, and restored with it at
+every strength reduction trial, so a factor of safety is found undrained.
+
+**Drained stages.** A stage marked `drained` treats every soil as drained,
+and releases the excess pore pressure built up so far. The imbalance this
+leaves is applied over the stage's increments, so the soil consolidates to
+the drained state under the loads it carries. This is the long-term end of
+consolidation, without the time in between. Initial stresses are always
+drained.
+
+**What it does not do.** There is no consolidation in time; that needs
+coupled flow. Interfaces next to undrained soil see the contact traction of
+skeleton and excess water together, so an interface with friction is
+stronger there than an effective-stress contact would be. For `φ = 0`
+(undrained B) this makes no difference.
+
+**Checks:**
+
+| Case | Closed form | Lythos 3D |
+| --- | --- | --- |
+| Skeleton + water | Poisson's ratio `νu` | exact |
+| Confined surcharge, undrained | `w = qH/(M + Kw/n)`, `pₑ = q Kw/n / (M + Kw/n)` | exact |
+| Then drained | `w = qH/M`, `pₑ = 0` | exact |
+| Strip footing on undrained clay, slice, 0.5 m / 0.25 m elements | Prandtl `(2 + π) su / q = 3.085` | 3.180 / 3.133 |
+
+The footing converges on Prandtl's value from above as the mesh is refined
+(3.1% and then 1.6% over it), as a displacement-based mesh should. The water's
+stiffness at `νu` = 0.495 does not lock the quadratic tetrahedra.

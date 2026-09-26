@@ -58,7 +58,7 @@ from ..core.water import Drawdown, Seepage, WaterTable
 
 MODELS = {"mohr-coulomb": MohrCoulomb, "linear-elastic": LinearElastic}
 _STAGE_KEYS = {"name", "kind", "increments", "excavate", "install", "reset_displacements",
-               "initial_stress", "srf_min", "srf_max", "water"}
+               "initial_stress", "srf_min", "srf_max", "water", "drained"}
 _WATER_KEYS = {"level", "wells", "drawdowns", "gamma_w", "seepage"}
 _SEEPAGE_KEYS = {"closed", "psi_k", "k_min"}
 
@@ -225,7 +225,7 @@ def site_to_dict(site: Site) -> dict:
                     "excavate": list(s.excavate), "install": list(s.install),
                     "reset_displacements": s.reset_displacements,
                     "initial_stress": s.initial_stress, "srf_min": s.srf_min, "srf_max": s.srf_max,
-                    "water": water_to_dict(s.water)}
+                    "water": water_to_dict(s.water), "drained": s.drained}
                    for s in site.stages if not s.loads],
     }
 

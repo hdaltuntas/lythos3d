@@ -75,6 +75,11 @@ whose failure is bounded at its ends. Lythos 3D is for those.
   under the toe of a wall into a pumped pit, and the flow the pumps must
   lift is reported. Its pore pressures load the soil as the hydrostatic ones
   do, stage by stage.
+- **Undrained loading** (undrained A and B): effective stress with the pore
+  water as a stiff bulk spring (`nu_u` = 0.495), excess pore pressure
+  tracked point by point, and undrained strength from `c'`, `φ'` or given as
+  `su` (growing with depth if need be). A stage marked `drained` lets the
+  excess pore pressure dissipate and the soil consolidate.
 - **ParaView output** (`.vtu`): displacements, smoothed stresses and plastic
   strain on quadratic cells, stage by stage, with excavated ground left out.
 
@@ -169,6 +174,12 @@ For the flow itself rather than a level, give `Seepage(water)` instead
 (`k` and `k_v` on the soils set their permeability). The head, Darcy
 velocity and flows (`result.flows["pumped"]`) come with each stage.
 
+A clay loaded undrained takes `drainage="undrained"`, with effective
+parameters, or with `phi=0.0, c=su` (and `c_inc`, `z_ref` for a strength
+growing with depth). `Stage(..., drained=True)` lets its excess pore
+pressure go. `result.excess_pore_pressure` holds it, and it is part of
+`result.pore_pressure`.
+
 The stresses reported are effective. `result.pore_pressure` holds the pore
 pressure at the Gauss points, and ParaView gets `pore_pressure` and
 `total_stress` as well. On a `Site`, an excavation with `dewatered=True`
@@ -247,6 +258,8 @@ Every row is a test in `tests/`:
 | Seepage along and across layers | `W Σ kᵢ tᵢ ΔH/L`, `ΔH / Σ Lᵢ/kᵢ` | exact |
 | Rectangular dam, free surface and seepage face (Charny) | `k (H₁² − H₂²)/2L` | within 3.3% (0.8% with `psi_k` = 0.2) |
 | Pumped pit behind an impermeable wall | all inflow pumped, less with a deeper wall | to 1e-6 |
+| Undrained then drained 1D loading | `qH/(M + Kw/n)`, then `qH/M` | exact |
+| Strip footing on undrained clay, slice (`pytest -m slow`) | Prandtl `(2 + π) su` | 3.1% over (0.5 m), 1.6% (0.25 m) |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
 0.5%, and falls with refinement the same way towards Bishop's 1.379:
@@ -290,8 +303,9 @@ which it sums. So a repeated run can land one bracket lower.
    and gravity initial stresses, excavation in lifts, strength reduction,
    checked against 2D Lythos in plane strain.~~
    ~~Groundwater, hydrostatic pore pressure and steady seepage.~~
-   Still to come here: undrained analysis, consolidation, and constructing
-   volumes (fill) as well as removing them.
+   ~~Undrained analysis.~~
+   Still to come here: consolidation in time, and constructing volumes (fill)
+   as well as removing them.
 3. ~~**Geometry**: soil layers from boreholes, excavations drawn in plan,
    meshed by gmsh, site files.~~
    Still to come here: DXF plan import (with the interface), and ground loads
