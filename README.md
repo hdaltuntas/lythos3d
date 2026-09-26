@@ -7,11 +7,14 @@ Plane strain is the right idealisation for a long slope or a long wall, and the
 wrong one for the corner of an excavation pit, a pile group, a raft, or a slope
 whose failure is bounded at its ends. Lythos 3D is for those.
 
-> **Status: early development.** Mohr-Coulomb plasticity, staged excavation
-> and strength reduction work on ground described by boreholes, with pits
-> drawn in plan and meshed by gmsh. They are verified against closed-form
-> solutions and against 2D Lythos. Structures (walls, piles, anchors) come
-> next; see the [roadmap](#roadmap).
+> **Status:** the planned scope is complete. The program covers ground from
+> boreholes and plans drawn in the browser or taken from DXF. It analyses
+> staged excavation and fill with walls, anchors, interfaces and embedded
+> piles, and handles groundwater from hydrostatic to steady seepage,
+> undrained loading and consolidation. Factors of safety come from strength
+> reduction, and results go to a 3D report in the browser. Everything is
+> verified against closed-form solutions, limit equilibrium and 2D Lythos;
+> see [Verification](#verification).
 
 ## What works now
 
@@ -95,6 +98,8 @@ whose failure is bounded at its ends. Lythos 3D is for those.
   pressure against time come with each stage.
 - **ParaView output** (`.vtu`): displacements, smoothed stresses and plastic
   strain on quadratic cells, stage by stage, with excavated ground left out.
+- **Browser**: a plan editor to draw a site, and an HTML report with a 3D
+  viewer (contours, deformed shape, cut planes) that opens offline.
 
 ## Installing and trying it
 
@@ -111,8 +116,10 @@ lythos3d pit --trench -o trench  # the same section as a long trench, in plane s
 lythos3d site-example -o site.json   # boreholes, dipping layers, a walled and strutted pit
 lythos3d site-example --water -o wet.json   # the same below the water table, pumped dry as dug
 lythos3d site-example --seepage -o flow.json   # the same with the flow into the pit solved
+lythos3d editor -o editor.html       # draw a site in the browser and save its site.json
+lythos3d dxf plan.dxf                # list the layers of a DXF plan, to use its outlines
 lythos3d mesh site.json -o mesh.vtu  # mesh it; report element quality per soil and lift
-lythos3d run site.json -o run        # stage by stage, then the factor of safety
+lythos3d run site.json -o run        # stage by stage, then the factor of safety -> run/report.html
 pytest
 ```
 
@@ -136,6 +143,34 @@ From a clone without installing, `python main.py info` and
 assembled in 8.48 s, solved by pardiso in 8.36 s
 settlement under the centre of the footing: 14.8 mm
 ```
+
+## In the browser
+
+`lythos3d editor` writes a plan editor: a single HTML file that works
+offline. In it you draw the model extent, boreholes, pits, walls, fills,
+area loads, anchors and piles, enter the soils and the water level, and save
+a `site.json` that `lythos3d run` takes as it is. A DXF plan can be loaded
+underneath and its polylines picked up with a click.
+
+![The plan editor](docs/images/editor.png)
+
+`lythos3d run` writes `report.html` next to the ParaView files. The report
+has:
+
+- the materials;
+- a table of every stage: displacement, factor of safety, plastic points,
+  wall moments, anchor forces, seepage flows and consolidation;
+- charts: the strength reduction search, consolidation against time, wall
+  moment envelopes against level, and pile axial forces;
+- a 3D viewer (three.js, included in the file, so it opens offline). It
+  shows any stage, coloured by displacement, stress, plastic strain, pore
+  pressure or head, with a deformation scale and a cut plane that shows the
+  field on the section.
+
+From a script, `lythos3d.io.viewer.write_report(path, problem, results)` does
+the same.
+
+![The 3D viewer, cut through a walled pit](docs/images/viewer.png)
 
 ## From a script
 
@@ -331,8 +366,12 @@ which it sums. So a repeated run can land one bracket lower.
 4. **Structures**: ~~plates for walls and rafts, anchors and struts, walls
    drawn in plan for gmsh sites~~.
    ~~Soil–wall interfaces, embedded piles~~.
-5. **Interface**: a three.js viewer for contours and cut planes, a plan
-   editor, DXF plan import and an HTML report.
+5. ~~**Interface**: a three.js viewer for contours and cut planes, a plan
+   editor, DXF plan import and an HTML report.~~
+
+Beyond this scope, natural next steps would be a stiffness that depends on
+stress (hardening soil), more interface types (between soils, under rafts)
+and dynamic loading.
 
 ## Licence
 

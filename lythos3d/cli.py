@@ -138,10 +138,11 @@ def _run(args) -> int:
     print(f"{site.name}: {problem.mesh.n_elements} elements, {problem.n_dof} equations")
     os.makedirs(args.out, exist_ok=True)
     solver = Solver(problem, tolerance=args.tolerance, backend=args.solver, verbose=args.verbose)
-    summary = []
+    summary, results = [], []
     for k, stage in enumerate(stages):
         problem.check_stage_groups(stage)
         r = solver.run_stage(stage)
+        results.append(r)
         path = write_stage(os.path.join(args.out, f"stage{k}.vtu"), problem, r)
         write_plates(os.path.join(args.out, f"plates{k}.vtu"), problem, r)
         moments = {name: round(float(np.abs(M).max()), 2) for name, (_, M, _) in r.plate_forces.items()}
@@ -179,8 +180,21 @@ def _run(args) -> int:
             break
     with open(os.path.join(args.out, "summary.json"), "w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2)
-    print(f"results in {args.out}/ (stage*.vtu and plates*.vtu for ParaView, summary.json)")
+    from .io.viewer import write_report
+
+    write_report(os.path.join(args.out, "report.html"), problem, results, title=site.name)
+    print(f"results in {args.out}/ (report.html in a browser; stage*.vtu and plates*.vtu for ParaView; "
+          "summary.json)")
     return 0 if all(s["converged"] for s in summary) else 1
+
+
+def _editor(args) -> int:
+    import shutil
+
+    source = os.path.join(os.path.dirname(__file__), "io", "editor.html")
+    shutil.copyfile(source, args.out)
+    print(f"written {args.out}: open it in a browser, draw the site, and save site.json for lythos3d run")
+    return 0
 
 
 def _dxf(args) -> int:
@@ -240,6 +254,10 @@ def main(argv=None) -> int:
     p.add_argument("site", help="site description (.json)")
     p.add_argument("-o", "--out", help="write the mesh as .vtu, with soils, lifts and element quality")
     p.set_defaults(func=_mesh)
+
+    p = sub.add_parser("editor", help="write the plan editor: draw a site in the browser")
+    p.add_argument("-o", "--out", default="lythos3d_editor.html")
+    p.set_defaults(func=_editor)
 
     p = sub.add_parser("dxf", help="list the layers and polylines of a DXF plan")
     p.add_argument("drawing", help="an ASCII .dxf file")

@@ -7,7 +7,6 @@ from lythos3d.core.materials import LinearElastic
 from lythos3d.core.mesh import box_mesh, graded
 from lythos3d.core.problem import Problem, Stage
 from lythos3d.core.seepage import solve_seepage
-from lythos3d.core.solver import Solver
 from lythos3d.core.water import GAMMA_WATER, Seepage, WaterTable
 
 

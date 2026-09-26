@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lythos 3D plan editor</title>
+<style>
+:root { --bg: #f6f7f9; --ink: #1b1f24; --muted: #5b6470; --line: #d5dae1; --panel: #ffffff; --canvas: #fbfcfd;
+        --accent: #2563eb; --accent-ink: #ffffff; --grid: #e7ebf0; --grid-major: #d3d9e1; --bad: #dc2626; --ok: #16a34a;
+        --pit: #dc2626; --wall: #1f2937; --fill: #a16207; --load: #7c3aed; --hole: #0891b2; --anchor: #16a34a; --pile: #db2777; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #111418; --ink: #e6e9ee; --muted: #9aa4b1; --line: #2b323b; --panel: #181c22; --canvas: #14181d;
+          --accent: #60a5fa; --accent-ink: #0b1220; --grid: #1d232b; --grid-major: #283039; --bad: #f87171; --ok: #4ade80;
+          --pit: #f87171; --wall: #e5e7eb; --fill: #eab308; --load: #a78bfa; --hole: #22d3ee; --anchor: #4ade80; --pile: #f472b6; }
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.4 system-ui, sans-serif; display: flex; flex-direction: column; }
+header { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 15px; margin: 0 10px 0 0; }
+button, select, input, textarea { font: inherit; color: inherit; }
+button { background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 9px; cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+main { flex: 1; display: flex; min-height: 0; }
+#plan { flex: 1; min-width: 0; position: relative; background: var(--canvas); touch-action: none; }
+#plan svg { width: 100%; height: 100%; display: block; user-select: none; }
+#status { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
+#hint { position: absolute; left: 10px; top: 8px; color: var(--muted); font-size: 12px; background: var(--panel);
+        border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; max-width: calc(100% - 20px); }
+aside { width: 360px; max-width: 45vw; border-left: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+.tabs { display: flex; border-bottom: 1px solid var(--line); }
+.tabs button { border: 0; border-radius: 0; flex: 1; padding: 8px; border-bottom: 2px solid transparent; }
+.tabs button.on { background: transparent; color: var(--ink); border-bottom-color: var(--accent); }
+.pane { padding: 12px; overflow: auto; flex: 1; }
+.form { display: grid; grid-template-columns: 110px 1fr; gap: 6px 8px; align-items: center; }
+.form label { color: var(--muted); }
+.form input, .form select, .form textarea { width: 100%; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
+.form textarea { min-height: 90px; font-family: ui-monospace, monospace; font-size: 12px; }
+.form .wide { grid-column: 1 / -1; }
+h3 { font-size: 13px; margin: 14px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+table { border-collapse: collapse; width: 100%; font-size: 12px; }
+td, th { padding: 2px 3px; border-bottom: 1px solid var(--line); text-align: left; }
+td input, td select { width: 100%; min-width: 48px; background: var(--bg); border: 1px solid var(--line); border-radius: 4px; padding: 2px 4px; }
+.soilscroll { overflow-x: auto; }
+.msg { margin: 4px 0; font-size: 13px; }
+.msg.bad { color: var(--bad); } .msg.ok { color: var(--ok); }
+.list { display: flex; flex-direction: column; gap: 2px; }
+.list button { text-align: left; border-color: transparent; }
+.list button.on { background: transparent; color: var(--accent); border-color: var(--accent); }
+.muted { color: var(--muted); }
+svg .item { cursor: pointer; }
+svg .sel { stroke-width: 3; }
+svg text { font: 11px system-ui, sans-serif; fill: var(--muted); }
+@media (max-width: 760px) { main { flex-direction: column; } aside { width: 100%; max-width: none; height: 45vh; border-left: 0; border-top: 1px solid var(--line); } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Lythos 3D plan</h1>
+  <button id="new">New</button>
+  <button id="open">Open…</button>
+  <button id="save">Save site.json</button>
+  <button id="dxf">DXF underlay…</button>
+  <span class="sep"></span>
+  <span id="tools"></span>
+  <span class="sep"></span>
+  <button id="fit" title="fit the drawing to the view">Fit</button>
+  <input type="file" id="file" accept=".json,application/json" hidden>
+  <input type="file" id="dxffile" accept=".dxf" hidden>
+</header>
+<main>
+  <div id="plan"><svg id="svg"></svg><div id="hint"></div><div id="status"></div></div>
+  <aside>
+    <div class="tabs"><button data-tab="item" class="on">Item</button><button data-tab="soils">Soils</button><button data-tab="site">Site</button><button data-tab="check">Check</button></div>
+    <div class="pane" id="pane"></div>
+  </aside>
+</main>
+<script>
+"use strict";
+// ------------------------------------------------------------------ model
+const TOOLS = [
+  ["select", "Select"], ["extent", "Extent"], ["hole", "Borehole"], ["pit", "Pit"], ["wall", "Wall"],
+  ["fill", "Fill"], ["load", "Load"], ["anchor", "Anchor"], ["pile", "Pile"],
+];
+const HINTS = {
+  select: "Click an item to edit it, drag its corners to move them; drag empty space to pan, wheel to zoom. Delete removes the selected item.",
+  extent: "Drag a rectangle: the plan extent of the model.",
+  hole: "Click to place a borehole, then list its soils in the Item tab.",
+  pit: "Click the corners of the pit; double-click or Enter to finish, Esc to cancel. Click a DXF polyline to take it.",
+  wall: "Click along the wall; double-click or Enter to finish. Close it round a pit by clicking its first point.",
+  fill: "Click the corners of the fill; double-click or Enter to finish.",
+  load: "Click the corners of the loaded area; double-click or Enter to finish.",
+  anchor: "Click the head of the anchor, then its far end.",
+  pile: "Click to place a pile.",
+};
+function blank() {
+  return {
+    name: "new site", extent: {x: [0, 40], y: [0, 30]}, bottom: -15, mesh_size: 2.5,
+    soils: [
+      {name: "clay", model: "mohr-coulomb", E: 20000, nu: 0.3, gamma: 18, gamma_sat: 19, c: 10, phi: 25, psi: 0, k: 1e-8, drainage: "drained"},
+      {name: "sand", model: "mohr-coulomb", E: 60000, nu: 0.3, gamma: 19, gamma_sat: 20, c: 1, phi: 34, psi: 4, k: 1e-4, drainage: "drained"},
+    ],
+    boreholes: [], excavations: [], walls: [], fills: [], loads: [], anchors: [], piles: [],
+    water: null, seepage: false,
+  };
+}
+let site = blank();
+let tool = "select", sel = null, draft = null, underlay = [], snap = 0.5;
+let view = {x: -5, y: 35, s: 12};               // plan x, y at the top left, pixels per metre
+const svg = document.getElementById("svg"), plan = document.getElementById("plan");
+
+const LISTS = {hole: "boreholes", pit: "excavations", wall: "walls", fill: "fills", load: "loads", anchor: "anchors", pile: "piles"};
+function nextName(kind, stem) {
+  const names = new Set(site[LISTS[kind]].map(i => i.name));
+  for (let k = 1; ; k++) if (!names.has(`${stem}${k}`)) return `${stem}${k}`;
+}
+
+// --------------------------------------------------------------- geometry
+const toScreen = (x, y) => [(x - view.x) * view.s, (view.y - y) * view.s];
+function toPlan(evt) {
+  const r = svg.getBoundingClientRect();
+  return [view.x + (evt.clientX - r.left) / view.s, view.y - (evt.clientY - r.top) / view.s];
+}
+const snapTo = p => snap > 0 ? p.map(v => Math.round(v / snap) * snap) : p;
+const fmt = v => (Math.round(v * 1000) / 1000).toString();
+
+// ------------------------------------------------------------------ draw
+function el(tag, attrs, parent) {
+  const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+  for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v);
+  (parent || svg).appendChild(e); return e;
+}
+function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function points(list) { return list.map(p => toScreen(p[0], p[1]).join(",")).join(" "); }
+function draw() {
+  svg.innerHTML = "";
+  const w = svg.clientWidth, h = svg.clientHeight;
+  // grid
+  const step = [1, 2, 5, 10, 20, 50, 100].find(s => s * view.s >= 18) || 100;
+  const x0 = Math.floor(view.x / step) * step, x1 = view.x + w / view.s, y1 = view.y, y0 = view.y - h / view.s;
+  for (let x = x0; x <= x1; x += step) { const [sx] = toScreen(x, 0); el("line", {x1: sx, y1: 0, x2: sx, y2: h, stroke: css(Math.round(x / step) % 5 ? "--grid" : "--grid-major")}); }
+  for (let y = Math.floor(y0 / step) * step; y <= y1; y += step) { const [, sy] = toScreen(0, y); el("line", {x1: 0, y1: sy, x2: w, y2: sy, stroke: css(Math.round(y / step) % 5 ? "--grid" : "--grid-major")}); }
+  // underlay
+  underlay.forEach((u, i) => {
+    const e = el(u.closed ? "polygon" : "polyline", {points: points(u.points), fill: "none", stroke: css("--muted"), "stroke-dasharray": "4 3", "stroke-width": 1.2, class: "item"});
+    e.addEventListener("click", ev => { if (["pit", "wall", "fill", "load"].includes(tool)) { ev.stopPropagation(); adopt(u); } });
+  });
+  // extent
+  const {x: ex, y: ey} = site.extent;
+  el("polygon", {points: points([[ex[0], ey[0]], [ex[1], ey[0]], [ex[1], ey[1]], [ex[0], ey[1]]]), fill: "none", stroke: css("--ink"), "stroke-width": 1.5});
+  const lab = toScreen(ex[0], ey[1]); el("text", {x: lab[0] + 4, y: lab[1] - 5}).textContent = `${site.name}: ${fmt(ex[1] - ex[0])} × ${fmt(ey[1] - ey[0])} m, base ${site.bottom}`;
+  const shape = (kind, item, colour, closed, dash) => {
+    const isSel = sel && sel.kind === kind && sel.item === item;
+    const e = el(closed ? "polygon" : "polyline", {points: points(item.polygon || item.path || item.area), fill: closed ? colour : "none", "fill-opacity": closed ? 0.12 : 0,
+      stroke: colour, "stroke-width": isSel ? 3 : (kind === "wall" ? 2.5 : 1.8), "stroke-dasharray": dash || "", class: "item"});
+    e.addEventListener("pointerdown", ev => { if (tool === "select") { ev.stopPropagation(); select(kind, item); startDragItem(ev, item.polygon || item.path || item.area); } });
+    const c = (item.polygon || item.path || item.area)[0], s = toScreen(c[0], c[1]);
+    el("text", {x: s[0] + 4, y: s[1] - 4}).textContent = item.name;
+    if (isSel) handles(item.polygon || item.path || item.area);
+  };
+  site.fills.forEach(f => shape("fill", f, css("--fill"), true));
+  site.excavations.forEach(p => shape("pit", p, css("--pit"), true));
+  site.loads.forEach(l => shape("load", l, css("--load"), true, "6 3"));
+  site.walls.forEach(wl => shape("wall", wl, css("--wall"), false));
+  site.anchors.forEach(a => {
+    const isSel = sel && sel.item === a, pa = toScreen(a.a[0], a.a[1]), pb = toScreen(a.b[0], a.b[1]);
+    const e = el("line", {x1: pa[0], y1: pa[1], x2: pb[0], y2: pb[1], stroke: css("--anchor"), "stroke-width": isSel ? 3.5 : 2, class: "item"});
+    e.addEventListener("pointerdown", ev => { if (tool === "select") { ev.stopPropagation(); select("anchor", a); } });
+    el("circle", {cx: pa[0], cy: pa[1], r: 3, fill: css("--anchor")});
+    if (isSel) handles([a.a, a.b]);
+  });
+  const dot = (kind, item, xy, colour, r) => {
+    const isSel = sel && sel.item === item, s = toScreen(xy[0], xy[1]);
+    const e = el("circle", {cx: s[0], cy: s[1], r: isSel ? r + 2 : r, fill: colour, stroke: css("--canvas"), "stroke-width": 1.5, class: "item"});
+    e.addEventListener("pointerdown", ev => { if (tool === "select") { ev.stopPropagation(); select(kind, item); startDragPoint(ev, xy); } });
+    el("text", {x: s[0] + r + 3, y: s[1] + 4}).textContent = item.name;
+    if (isSel) handles([]);
+  };
+  site.boreholes.forEach(b => dot("hole", b, b._xy || (b._xy = [b.x, b.y]), css("--hole"), 5));
+  site.piles.forEach(p => dot("pile", p, p.head, css("--pile"), 4));
+  // draft
+  if (draft && draft.points.length) {
+    const pts = draft.cursor ? [...draft.points, draft.cursor] : draft.points;
+    el("polyline", {points: points(pts), fill: "none", stroke: css("--accent"), "stroke-width": 2, "stroke-dasharray": "5 3"});
+    draft.points.forEach(p => { const s = toScreen(p[0], p[1]); el("circle", {cx: s[0], cy: s[1], r: 3, fill: css("--accent")}); });
+  }
+  if (draft && draft.rect) {
+    const [a, b] = draft.rect, pa = toScreen(Math.min(a[0], b[0]), Math.max(a[1], b[1])), pb = toScreen(Math.max(a[0], b[0]), Math.min(a[1], b[1]));
+    el("rect", {x: pa[0], y: pa[1], width: pb[0] - pa[0], height: pb[1] - pa[1], fill: "none", stroke: css("--accent"), "stroke-dasharray": "5 3"});
+  }
+}
+function handles(pts) {
+  if (tool !== "select") return;                  // drawing tools click through to the plan
+  pts.forEach(p => {
+    const s = toScreen(p[0], p[1]);
+    const e = el("rect", {x: s[0] - 4, y: s[1] - 4, width: 8, height: 8, fill: css("--canvas"), stroke: css("--accent"), "stroke-width": 1.5, class: "item"});
+    e.addEventListener("pointerdown", ev => { ev.stopPropagation(); startDragPoint(ev, p); });
+  });
+}
+
+// ----------------------------------------------------------- interaction
+let drag = null;
+function startDragPoint(ev, p) { drag = {kind: "point", p}; svg.setPointerCapture(ev.pointerId); }
+function startDragItem(ev, pts) { drag = {kind: "item", pts, from: snapTo(toPlan(ev))}; svg.setPointerCapture(ev.pointerId); }
+svg.addEventListener("pointerdown", ev => {
+  const p = snapTo(toPlan(ev));
+  if (tool === "select" || ev.button === 1) { drag = {kind: "pan", sx: ev.clientX, sy: ev.clientY, vx: view.x, vy: view.y}; svg.setPointerCapture(ev.pointerId); if (tool === "select" && ev.button === 0) { sel = null; showTab(); } return; }
+  if (tool === "extent") { draft = {rect: [p, p]}; drag = {kind: "rect"}; svg.setPointerCapture(ev.pointerId); return; }
+  if (tool === "hole") { const b = {name: nextName("hole", "BH"), x: p[0], y: p[1], tops: [[site.soils[0]?.name || "soil", 0.0]]}; site.boreholes.push(b); select("hole", b); return; }
+  if (tool === "pile") { const q = {name: nextName("pile", "P"), head: [p[0], p[1], 0], tip: [p[0], p[1], -12], E: 3e7, D: 0.6, nu: 0.2, weight: 0, hollow: 0, skin: null, base: null}; site.piles.push(q); select("pile", q); return; }
+  if (!draft) draft = {kind: tool, points: []};
+  const first = draft.points[0];
+  if (tool === "wall" && first && draft.points.length > 2 && Math.hypot(p[0] - first[0], p[1] - first[1]) < 1e-9) { draft.points.push([...first]); finish(); return; }
+  draft.points.push(p);
+  if (tool === "anchor" && draft.points.length === 2) finish();
+  draw();
+});
+svg.addEventListener("pointermove", ev => {
+  const p = toPlan(ev), q = snapTo(p);
+  document.getElementById("status").textContent = `x ${fmt(q[0])}  y ${fmt(q[1])}  ·  snap ${snap || "off"} m`;
+  if (drag && drag.kind === "pan") { view.x = drag.vx - (ev.clientX - drag.sx) / view.s; view.y = drag.vy + (ev.clientY - drag.sy) / view.s; draw(); return; }
+  if (drag && drag.kind === "point") { drag.p[0] = q[0]; drag.p[1] = q[1]; syncBorehole(); draw(); return; }
+  if (drag && drag.kind === "item") { const dx = q[0] - drag.from[0], dy = q[1] - drag.from[1]; if (dx || dy) { drag.pts.forEach(pt => { pt[0] += dx; pt[1] += dy; }); drag.from = q; draw(); } return; }
+  if (drag && drag.kind === "rect") { draft.rect[1] = q; draw(); return; }
+  if (draft && draft.points) { draft.cursor = q; draw(); }
+});
+svg.addEventListener("pointerup", () => {
+  if (drag && drag.kind === "rect") {
+    const [a, b] = draft.rect;
+    if (a[0] !== b[0] && a[1] !== b[1]) site.extent = {x: [Math.min(a[0], b[0]), Math.max(a[0], b[0])], y: [Math.min(a[1], b[1]), Math.max(a[1], b[1])]};
+    draft = null; showTab();
+  }
+  if (drag && drag.kind !== "pan") showTab();
+  drag = null; draw();
+});
+svg.addEventListener("dblclick", () => { if (draft && draft.points) { draft.points.pop(); finish(); } });
+svg.addEventListener("wheel", ev => {
+  ev.preventDefault();
+  const p = toPlan(ev), f = Math.exp(-ev.deltaY * 0.0015);
+  view.s = Math.min(400, Math.max(0.5, view.s * f));
+  const r = svg.getBoundingClientRect();
+  view.x = p[0] - (ev.clientX - r.left) / view.s; view.y = p[1] + (ev.clientY - r.top) / view.s; draw();
+}, {passive: false});
+document.addEventListener("keydown", ev => {
+  if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement.tagName)) return;
+  if (ev.key === "Enter" && draft && draft.points) finish();
+  if (ev.key === "Escape") { draft = null; draw(); }
+  if ((ev.key === "Delete" || ev.key === "Backspace") && sel) { remove(sel); }
+});
+function syncBorehole() { site.boreholes.forEach(b => { if (b._xy) { b.x = b._xy[0]; b.y = b._xy[1]; } }); }
+function finish() {
+  const d = draft; draft = null;
+  if (!d || !d.points) return draw();
+  const pts = d.points.map(p => [p[0], p[1]]);
+  let item;
+  if (d.kind === "pit" && pts.length >= 3) { item = {name: nextName("pit", "pit"), polygon: pts, levels: [-2, -4], dewatered: false}; site.excavations.push(item); }
+  if (d.kind === "fill" && pts.length >= 3) { item = {name: nextName("fill", "fill"), polygon: pts, levels: [1, 2], soil: site.soils[0]?.name}; site.fills.push(item); }
+  if (d.kind === "load" && pts.length >= 3) { item = {name: nextName("load", "load"), area: pts, q: 20, horizontal: [0, 0]}; site.loads.push(item); }
+  if (d.kind === "wall" && pts.length >= 2) { item = {name: nextName("wall", "wall"), path: pts, toe: -10, top: null, E: 3e7, nu: 0.2, t: 0.6, weight: 0, interface: null}; site.walls.push(item); }
+  if (d.kind === "anchor" && pts.length === 2) { item = {name: nextName("anchor", "anchor"), a: [...pts[0], -1], b: [...pts[1], -6], EA: 2e5, prestress: 200, fixed_end: false}; site.anchors.push(item); }
+  if (item) select(d.kind, item); else draw();
+}
+function adopt(u) {
+  draft = {kind: tool, points: u.points.map(p => [p[0], p[1]])};
+  if (tool === "wall" && u.closed) draft.points.push([...u.points[0]]);
+  finish();
+}
+function select(kind, item) { sel = {kind, item}; showTab("item"); draw(); }
+function remove(s) { const list = site[LISTS[s.kind]]; list.splice(list.indexOf(s.item), 1); sel = null; showTab(); draw(); }
+
+// ------------------------------------------------------------------ panes
+let tab = "item";
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => showTab(b.dataset.tab));
+const pane = document.getElementById("pane");
+function showTab(t) {
+  if (t) tab = t;
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.tab === tab));
+  pane.innerHTML = "";
+  ({item: itemPane, soils: soilsPane, site: sitePane, check: checkPane})[tab]();
+}
+function field(form, label, value, onchange, type = "number", options = null) {
+  const l = document.createElement("label"); l.textContent = label; form.appendChild(l);
+  let input;
+  if (options) { input = document.createElement("select"); options.forEach(o => input.add(new Option(o, o))); input.value = value ?? ""; }
+  else if (type === "textarea") { input = document.createElement("textarea"); input.value = value; }
+  else if (type === "checkbox") { input = document.createElement("input"); input.type = "checkbox"; input.checked = !!value; input.style.width = "auto"; }
+  else { input = document.createElement("input"); input.type = type; input.value = value ?? ""; if (type === "number") input.step = "any"; }
+  input.onchange = () => { onchange(type === "checkbox" ? input.checked : type === "number" ? (input.value === "" ? null : Number(input.value)) : input.value); draw(); };
+  form.appendChild(input); return input;
+}
+const list = s => s.split(/[,;\s]+/).filter(Boolean).map(Number);
+function itemPane() {
+  const all = Object.entries(LISTS).flatMap(([kind, key]) => site[key].map(item => ({kind, item})));
+  if (!sel) {
+    pane.innerHTML = `<p class="muted">${HINTS[tool]}</p>`;
+    if (all.length) {
+      const h = document.createElement("h3"); h.textContent = "Items"; pane.appendChild(h);
+      const box = document.createElement("div"); box.className = "list";
+      all.forEach(({kind, item}) => { const b = document.createElement("button"); b.textContent = `${kind}: ${item.name}`; b.onclick = () => select(kind, item); box.appendChild(b); });
+      pane.appendChild(box);
+    }
+    return;
+  }
+  const {kind, item} = sel, form = document.createElement("div"); form.className = "form"; pane.appendChild(form);
+  const title = document.createElement("h3"); title.textContent = kind; pane.prepend(title);
+  field(form, "Name", item.name, v => item.name = v, "text");
+  const soils = site.soils.map(s => s.name);
+  if (kind === "hole") {
+    field(form, "x", item.x, v => { item.x = v; item._xy = [item.x, item.y]; });
+    field(form, "y", item.y, v => { item.y = v; item._xy = [item.x, item.y]; });
+    const help = document.createElement("div"); help.className = "wide muted"; help.textContent = `Soils from the top down, one per line: name and the level of its top (${soils.join(", ")}).`; form.appendChild(help);
+    const t = field(form, "Tops", item.tops.map(r => `${r[0]} ${r[1]}`).join("\n"), v => {
+      item.tops = v.split("\n").map(s => s.trim()).filter(Boolean).map(s => { const m = s.split(/\s+/); return [m.slice(0, -1).join(" "), Number(m[m.length - 1])]; });
+    }, "textarea");
+    t.classList.add("wide");
+  }
+  if (kind === "pit") {
+    field(form, "Levels", item.levels.join(", "), v => item.levels = list(v), "text");
+    field(form, "Mesh size", item.mesh_size, v => item.mesh_size = v);
+    field(form, "Dewatered", item.dewatered, v => item.dewatered = v, "checkbox");
+  }
+  if (kind === "fill") {
+    field(form, "Levels", item.levels.join(", "), v => item.levels = list(v), "text");
+    field(form, "Material", item.soil, v => item.soil = v, "text", soils);
+  }
+  if (kind === "load") {
+    field(form, "q (kPa)", item.q, v => item.q = v);
+    field(form, "qx (kPa)", item.horizontal[0], v => item.horizontal[0] = v);
+    field(form, "qy (kPa)", item.horizontal[1], v => item.horizontal[1] = v);
+  }
+  if (kind === "wall") {
+    field(form, "Toe level", item.toe, v => item.toe = v);
+    field(form, "Top level", item.top, v => item.top = v);
+    field(form, "E (kPa)", item.E, v => item.E = v);
+    field(form, "ν", item.nu, v => item.nu = v);
+    field(form, "t (m)", item.t, v => item.t = v);
+    field(form, "Weight (kN/m²)", item.weight, v => item.weight = v);
+    field(form, "Interface", !!item.interface, v => { item.interface = v ? {R: 0.67} : null; showTab(); }, "checkbox");
+    if (item.interface) field(form, "R", item.interface.R, v => item.interface.R = v);
+  }
+  if (kind === "anchor") {
+    field(form, "Head level", item.a[2], v => item.a[2] = v);
+    field(form, "End level", item.b[2], v => item.b[2] = v);
+    field(form, "EA (kN)", item.EA, v => item.EA = v);
+    field(form, "Lock-off (kN)", item.prestress, v => item.prestress = v);
+    field(form, "Fixed end", item.fixed_end, v => item.fixed_end = v, "checkbox");
+  }
+  if (kind === "pile") {
+    field(form, "Head level", item.head[2], v => item.head[2] = v);
+    field(form, "Tip level", item.tip[2], v => item.tip[2] = v);
+    field(form, "E (kPa)", item.E, v => item.E = v);
+    field(form, "D (m)", item.D, v => item.D = v);
+    field(form, "Skin top (kN/m)", item.skin?.[0], v => item.skin = v == null ? null : [v, item.skin?.[1] ?? v]);
+    field(form, "Skin tip (kN/m)", item.skin?.[1], v => item.skin = v == null ? null : [item.skin?.[0] ?? v, v]);
+    field(form, "Base (kN)", item.base, v => item.base = v);
+  }
+  const del = document.createElement("button"); del.textContent = "Delete"; del.style.marginTop = "12px"; del.onclick = () => remove(sel); pane.appendChild(del);
+}
+const SOIL_COLS = [["name", "text"], ["model", ["mohr-coulomb", "linear-elastic"]], ["E", "number"], ["nu", "number"], ["gamma", "number"], ["gamma_sat", "number"],
+  ["c", "number"], ["phi", "number"], ["psi", "number"], ["k", "number"], ["drainage", ["drained", "undrained"]]];
+function soilsPane() {
+  pane.innerHTML = `<p class="muted">Soils in the order they lie, top down. Units: kPa, kN/m³, degrees; k in m/s (or any unit of length per time).</p>`;
+  const wrap = document.createElement("div"); wrap.className = "soilscroll"; const t = document.createElement("table"); wrap.appendChild(t); pane.appendChild(wrap);
+  t.innerHTML = "<tr>" + SOIL_COLS.map(c => `<th>${c[0]}</th>`).join("") + "<th></th></tr>";
+  site.soils.forEach((s, i) => {
+    const tr = document.createElement("tr");
+    SOIL_COLS.forEach(([key, type]) => {
+      const td = document.createElement("td"); let input;
+      if (Array.isArray(type)) { input = document.createElement("select"); type.forEach(o => input.add(new Option(o, o))); input.value = s[key] ?? type[0]; }
+      else { input = document.createElement("input"); input.type = type; input.value = s[key] ?? ""; if (type === "number") input.step = "any"; }
+      input.onchange = () => { const old = s.name; s[key] = type === "number" ? (input.value === "" ? null : Number(input.value)) : input.value;
+        if (key === "name") site.boreholes.forEach(b => b.tops.forEach(r => { if (r[0] === old) r[0] = s.name; })); };
+      td.appendChild(input); tr.appendChild(td);
+    });
+    const td = document.createElement("td"), b = document.createElement("button"); b.textContent = "×"; b.onclick = () => { site.soils.splice(i, 1); showTab(); }; td.appendChild(b); tr.appendChild(td);
+    t.appendChild(tr);
+  });
+  const add = document.createElement("button"); add.textContent = "Add soil"; add.style.marginTop = "8px";
+  add.onclick = () => { site.soils.push({name: `soil${site.soils.length + 1}`, model: "mohr-coulomb", E: 30000, nu: 0.3, gamma: 18, gamma_sat: 19, c: 5, phi: 30, psi: 0, k: 1e-6, drainage: "drained"}); showTab(); };
+  pane.appendChild(add);
+}
+function sitePane() {
+  const form = document.createElement("div"); form.className = "form"; pane.appendChild(form);
+  field(form, "Name", site.name, v => site.name = v, "text");
+  field(form, "x from", site.extent.x[0], v => site.extent.x[0] = v); field(form, "x to", site.extent.x[1], v => site.extent.x[1] = v);
+  field(form, "y from", site.extent.y[0], v => site.extent.y[0] = v); field(form, "y to", site.extent.y[1], v => site.extent.y[1] = v);
+  field(form, "Base level", site.bottom, v => site.bottom = v);
+  field(form, "Mesh size (m)", site.mesh_size, v => site.mesh_size = v);
+  field(form, "Water level", site.water, v => site.water = v);
+  field(form, "Solve seepage", site.seepage, v => site.seepage = v, "checkbox");
+  field(form, "Snap (m)", snap, v => snap = v || 0);
+  const p = document.createElement("p"); p.className = "muted"; p.textContent = "Leave the water level empty for dry ground. Stages are made by Lythos 3D from what is drawn: initial stresses, walls and piles, fills, loads, each lift with its anchors, then the factor of safety.";
+  pane.appendChild(p);
+}
+function problems() {
+  const out = [], soils = new Set(site.soils.map(s => s.name));
+  const {x: ex, y: ey} = site.extent;
+  const inside = p => p[0] >= ex[0] - 1e-9 && p[0] <= ex[1] + 1e-9 && p[1] >= ey[0] - 1e-9 && p[1] <= ey[1] + 1e-9;
+  if (!site.soils.length) out.push("no soils");
+  if (!site.boreholes.length) out.push("no boreholes: place at least one");
+  site.boreholes.forEach(b => {
+    b.tops.forEach(([n]) => { if (!soils.has(n)) out.push(`${b.name}: unknown soil "${n}"`); });
+    for (let i = 1; i < b.tops.length; i++) if (b.tops[i][1] > b.tops[i - 1][1]) out.push(`${b.name}: levels must fall with depth`);
+    if (b.tops.length && b.tops[b.tops.length - 1][1] <= site.bottom) out.push(`${b.name}: reaches below the base of the model`);
+  });
+  site.excavations.forEach(p => { if (!p.polygon.every(inside)) out.push(`${p.name}: outside the extent`); if (p.levels.some((v, i) => i && v >= p.levels[i - 1])) out.push(`${p.name}: levels must fall lift by lift`); });
+  site.fills.forEach(f => { if (!f.polygon.every(inside)) out.push(`${f.name}: outside the extent`); if (f.levels.some((v, i) => i && v <= f.levels[i - 1])) out.push(`${f.name}: levels must rise lift by lift`); });
+  site.walls.forEach(w => { if (!w.path.every(inside)) out.push(`${w.name}: outside the extent`); if (w.toe <= site.bottom) out.push(`${w.name}: toe below the base`); });
+  const names = Object.values(LISTS).flatMap(k => site[k].map(i => i.name));
+  const dup = names.filter((n, i) => names.indexOf(n) !== i); if (dup.length) out.push(`names used twice: ${[...new Set(dup)].join(", ")}`);
+  return out;
+}
+function checkPane() {
+  const list = problems();
+  pane.innerHTML = list.length ? list.map(m => `<div class="msg bad">${m}</div>`).join("") : `<div class="msg ok">Ready: save site.json and run <code>lythos3d run site.json</code>.</div>`;
+}
+
+// ---------------------------------------------------------------- files
+function toJSON() {
+  const soil = n => { const s = site.soils.find(q => q.name === n) || site.soils[0]; return clean({...s}); };
+  const clean = o => { for (const k of Object.keys(o)) if (o[k] === null || o[k] === "" || k.startsWith("_")) delete o[k]; return o; };
+  const out = {
+    name: site.name, extent: site.extent, bottom: site.bottom, mesh_size: site.mesh_size,
+    soils: site.soils.map(s => clean({...s})),
+    boreholes: site.boreholes.map(b => ({name: b.name, x: b.x, y: b.y, tops: b.tops})),
+    excavations: site.excavations.map(p => clean({name: p.name, polygon: p.polygon, levels: p.levels, mesh_size: p.mesh_size ?? null, dewatered: p.dewatered || null})),
+    walls: site.walls.map(w => clean({name: w.name, path: w.path, toe: w.toe, top: w.top, E: w.E, nu: w.nu, t: w.t, weight: w.weight, interface: w.interface})),
+    anchors: site.anchors.map(a => ({name: a.name, a: a.a, b: a.b, EA: a.EA, prestress: a.prestress, fixed_end: a.fixed_end})),
+    piles: site.piles.map(p => clean({name: p.name, head: p.head, tip: p.tip, E: p.E, D: p.D, nu: p.nu, weight: p.weight, hollow: p.hollow, skin: p.skin, base: p.base})),
+    fills: site.fills.map(f => ({name: f.name, polygon: f.polygon, levels: f.levels, material: soil(f.soil)})),
+    loads: site.loads.map(l => ({name: l.name, area: l.area, q: l.q, horizontal: l.horizontal})),
+  };
+  if (site.water !== null && site.water !== undefined && site.water !== "") out.water = site.seepage ? {level: site.water, seepage: {}} : {level: site.water};
+  return out;
+}
+function fromJSON(d) {
+  const s = blank();
+  Object.assign(s, {name: d.name || "site", extent: d.extent, bottom: d.bottom, mesh_size: d.mesh_size ?? 2.0, soils: d.soils || []});
+  s.boreholes = (d.boreholes || []).map(b => ({...b}));
+  s.excavations = (d.excavations || []).map(p => ({dewatered: false, ...p}));
+  s.walls = (d.walls || []).map(w => ({nu: 0.2, weight: 0, top: null, interface: null, ...w}));
+  s.anchors = (d.anchors || []).map(a => ({...a, a: [...a.a], b: [...a.b]}));
+  s.piles = (d.piles || []).map(p => ({...p}));
+  s.fills = (d.fills || []).map(f => ({name: f.name, polygon: f.polygon, levels: f.levels, soil: f.material?.name}));
+  (d.fills || []).forEach(f => { if (f.material && !s.soils.some(q => q.name === f.material.name)) s.soils.push(f.material); });
+  s.loads = (d.loads || []).map(l => ({horizontal: [0, 0], ...l}));
+  s.water = d.water && d.water !== "dry" ? d.water.level ?? null : null;
+  s.seepage = !!(d.water && d.water.seepage);
+  if ([...s.excavations, ...s.walls].some(i => !Array.isArray(i.polygon || i.path))) alert("Outlines taken from a DXF file cannot be edited here; open the DXF as an underlay instead.");
+  return s;
+}
+function download(name, text) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([text], {type: "application/json"})); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+document.getElementById("new").onclick = () => { if (confirm("Start a new site? Unsaved changes are lost.")) { site = blank(); sel = null; fit(); showTab(); } };
+document.getElementById("save").onclick = () => { const bad = problems(); if (bad.length && !confirm(`There are problems:\n${bad.join("\n")}\n\nSave anyway?`)) return; download(`${site.name.replace(/\W+/g, "_") || "site"}.json`, JSON.stringify(toJSON(), null, 2)); };
+document.getElementById("open").onclick = () => document.getElementById("file").click();
+document.getElementById("file").onchange = async ev => { const f = ev.target.files[0]; if (!f) return; try { site = fromJSON(JSON.parse(await f.text())); sel = null; fit(); showTab(); } catch (e) { alert(`Could not read ${f.name}: ${e.message}`); } ev.target.value = ""; };
+document.getElementById("dxf").onclick = () => document.getElementById("dxffile").click();
+document.getElementById("dxffile").onchange = async ev => { const f = ev.target.files[0]; if (!f) return; underlay = parseDXF(await f.text()); if (!underlay.length) alert("No polylines or lines found in the drawing."); fit(); ev.target.value = ""; };
+document.getElementById("fit").onclick = fit;
+
+// the same subset of DXF the Python reader takes: LWPOLYLINE, POLYLINE/VERTEX, LINE
+function parseDXF(text) {
+  const L = text.split(/\r?\n/), pairs = [];
+  for (let i = 0; i + 1 < L.length; i += 2) pairs.push([parseInt(L[i]), L[i + 1].trim()]);
+  const out = []; let inEnt = false;
+  for (let i = 0; i < pairs.length; i++) {
+    const [c, v] = pairs[i];
+    if (c === 0 && v === "SECTION" && pairs[i + 1] && pairs[i + 1][1] === "ENTITIES") { inEnt = true; continue; }
+    if (c === 0 && v === "ENDSEC") inEnt = false;
+    if (!inEnt || c !== 0) continue;
+    const codes = []; let j = i + 1; while (j < pairs.length && pairs[j][0] !== 0) codes.push(pairs[j++]);
+    const get = k => codes.filter(p => p[0] === k).map(p => p[1]);
+    const layer = get(8)[0] || "0";
+    if (v === "LWPOLYLINE") { const xs = get(10).map(Number), ys = get(20).map(Number); out.push({layer, points: xs.map((x, k) => [x, ys[k]]), closed: (parseInt(get(70)[0] || "0") & 1) === 1}); }
+    else if (v === "POLYLINE") {
+      const closed = (parseInt(get(70)[0] || "0") & 1) === 1, pts = [];
+      while (j < pairs.length && pairs[j][1] === "VERTEX" && pairs[j][0] === 0) { const vc = []; j++; while (j < pairs.length && pairs[j][0] !== 0) vc.push(pairs[j++]); pts.push([Number(vc.find(p => p[0] === 10)[1]), Number(vc.find(p => p[0] === 20)[1])]); }
+      out.push({layer, points: pts, closed}); i = j - 1; continue;
+    } else if (v === "LINE") out.push({layer, points: [[Number(get(10)[0]), Number(get(20)[0])], [Number(get(11)[0]), Number(get(21)[0])]], closed: false});
+    i = j - 1;
+  }
+  return out;
+}
+
+function fit() {
+  const pts = [[site.extent.x[0], site.extent.y[0]], [site.extent.x[1], site.extent.y[1]], ...underlay.flatMap(u => u.points)];
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]), w = svg.clientWidth || 800, h = svg.clientHeight || 600;
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  view.s = 0.85 * Math.min(w / Math.max(x1 - x0, 1), h / Math.max(y1 - y0, 1));
+  view.x = (x0 + x1) / 2 - w / 2 / view.s; view.y = (y0 + y1) / 2 + h / 2 / view.s; draw();
+}
+// tools
+const toolbar = document.getElementById("tools");
+TOOLS.forEach(([t, label]) => {
+  const b = document.createElement("button"); b.textContent = label; b.dataset.tool = t;
+  b.onclick = () => { tool = t; draft = null; document.querySelectorAll("#tools button").forEach(x => x.classList.toggle("on", x.dataset.tool === t)); document.getElementById("hint").textContent = HINTS[t]; if (!sel) showTab(); draw(); };
+  toolbar.appendChild(b);
+});
+toolbar.firstChild.click();
+new ResizeObserver(draw).observe(plan);
+window.addEventListener("beforeunload", ev => { if (Object.values(LISTS).some(k => site[k].length)) { ev.preventDefault(); } });
+fit(); showTab();
+</script>
+</body>
+</html>

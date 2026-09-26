@@ -54,3 +54,8 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 110
+
+[tool.setuptools.package-data]
+# three.js (MIT), inlined into the HTML reports so that they open offline,
+# and the plan editor
+"lythos3d.io" = ["vendor/*", "editor.html"]

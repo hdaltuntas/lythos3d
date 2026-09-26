@@ -263,6 +263,9 @@ class Site:
     water: WaterTable | None = None
     #: embankments and platforms drawn in plan (:class:`~lythos3d.core.site.SiteFill`)
     fills: list = field(default_factory=list)
+    #: loads drawn in plan (:class:`~lythos3d.core.analysis.AreaLoad`): in the
+    #: default stages they go on after any fill and stay on
+    loads: list = field(default_factory=list)
 
     def __post_init__(self):
         names = [n for e in self.excavations for n in e.lift_names]
@@ -282,6 +285,9 @@ class Site:
         for fill in self.fills:
             for name, level in zip(fill.lift_names, fill.levels):
                 stages.append(Stage(f"{fill.name}: raise to {level:g}", construct=(name,)))
+        loads = tuple(self.loads)
+        if loads:
+            stages.append(Stage("apply " + ", ".join(ld.name for ld in loads), loads=loads))
         pending = list(self.anchors)
         water = self.water
         for exc in self.excavations:
@@ -289,16 +295,17 @@ class Site:
                 lowered = None
                 if exc.dewatered and water is not None and not water.is_dry:
                     water = lowered = water.lowered(exc.polygon, level)
-                stages.append(Stage(f"{exc.name}: dig to {level:g}", excavate=(name,), water=lowered))
+                stages.append(Stage(f"{exc.name}: dig to {level:g}", excavate=(name,), water=lowered,
+                                    loads=loads))
                 ready = [a for a in pending if a.a[2] >= level]
                 if ready:
                     stages.append(Stage(f"stress {', '.join(a.name for a in ready)}",
-                                        install=tuple(a.name for a in ready)))
+                                        install=tuple(a.name for a in ready), loads=loads))
                     pending = [a for a in pending if a not in ready]
         if pending:
             stages.append(Stage("install " + ", ".join(a.name for a in pending),
-                                install=tuple(a.name for a in pending)))
-        stages.append(Stage("factor of safety", kind="ssr"))
+                                install=tuple(a.name for a in pending), loads=loads))
+        stages.append(Stage("factor of safety", kind="ssr", loads=loads))
         return stages
 
     def build(self, verbose: bool = False) -> Problem:

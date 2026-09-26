@@ -46,7 +46,6 @@ def test_backfill_takes_its_material_and_starts_free_of_stress():
     # the backfill carries its own weight only: nothing of the dug ground's stress
     ngp = problem.continuum.n_gauss
     gp = (np.nonzero(fill)[0][:, None] * ngp + np.arange(ngp)).ravel()
-    z = problem.continuum.gauss_xyz.reshape(-1, 3)[gp, 2]
     szz = results[-1].state.stress[gp, 2]
     w = problem.continuum.detJw.ravel()[gp]
     # the fill's mean vertical stress is its own weight at mid-depth, less a

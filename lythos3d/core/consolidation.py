@@ -36,7 +36,6 @@ per day, time is in days.
 from __future__ import annotations
 
 import numpy as np
-import scipy.sparse as sp
 
 from .elements import TET10_FACES, TET_GAUSS_BARY
 

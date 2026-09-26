@@ -223,7 +223,8 @@ def site_from_dict(d: dict) -> Site:
         extent = d["extent"]
         return Site(d.get("name", "site"), profile, tuple(extent["x"]), tuple(extent["y"]),
                     excavations, stages, float(d.get("mesh_size", 2.0)), walls, anchors, piles,
-                    water_from_dict(d.get("water")), fills)
+                    water_from_dict(d.get("water")), fills,
+                    [load_from_dict(x) for x in d.get("loads", [])])
     except KeyError as err:
         raise ValueError(f"the site description is missing {err}") from None
 
@@ -252,6 +253,7 @@ def site_to_dict(site: Site) -> dict:
         "anchors": [{"name": a.name, "a": list(a.a), "b": list(a.b), "EA": a.EA, "prestress": a.prestress,
                      "fixed_end": a.fixed_end} for a in site.anchors],
         "piles": [_pile_to_dict(p) for p in site.piles],
+        "loads": [load_to_dict(x) for x in site.loads],
         "fills": [{"name": f.name, "polygon": [list(p) for p in f.polygon], "levels": list(f.levels),
                    "material": material_to_dict(f.material),
                    **({"mesh_size": f.mesh_size} if f.mesh_size else {})} for f in site.fills],
