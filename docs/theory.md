@@ -731,3 +731,43 @@ Against Terzaghi (one-way and two-way drainage, `Tv` = 0.05, 0.3 and 1), the
 settlement is within 0.6% at 20 steps per stage and 0.14% at 80. The
 pressure at the far end of the drainage path lags a little, by 5% at 40
 steps and 2.6% at 160, as backward Euler does.
+
+## Fill and loads on the ground
+
+**Fill.** New ground above the surface is meshed with the rest from the
+start. A `Fill` block in a box model, or a `SiteFill` polygon with rising
+lift levels on a site, is fragmented with the ground in gmsh so that the
+two share their faces. Its elements start inactive, and their nodes are held
+until a stage constructs them. When that happens, their material state is
+set to zero: stress, plastic strain and excess pore pressure alike. Only
+strain increments enter the stress, so the new ground carries nothing but
+what is put on it afterwards, starting with its own weight. Below the
+surface, a fill is ground that takes the fill's material when a stage
+constructs it: a backfill in a dug pit. The region of those elements
+changes (`construct_region`), and a solver started afresh resets it.
+
+Checks: a fill layer over a whole column gives the soil `γf t H / M` and
+the fill its own weight exactly. An embankment on sloping ground, meshed
+through gmsh in two lifts, has each lift's volume within 2% of the plan
+area times the thickness above the interpolated ground. The rest is the
+lofted ground surface rounding the kink at the boreholes' convex hull.
+
+**Loads drawn in plan.** An `AreaLoad` is a pressure per unit of plan
+area inside a polygon. It acts on every upward free face of the active
+ground whose centroid lies in the polygon, whatever the surface is at that
+stage: sloping ground, a pit floor or the top of a fill. On a face with
+unit normal `n` it becomes a traction `−q n_z` per unit of surface, so the
+resultant is exactly `q` times the plan area, which is tested on sloping and
+then dug ground.
+
+## Reports and the browser
+
+`lythos3d.io.viewer` sends the corner nodes of the mesh, the element
+connectivity, and per stage the active elements, the displacement and
+nodal fields, as base64 float32 in the HTML page. The page draws the free
+faces of the active tetrahedra. Faces either side of a wall with an
+interface are paired through the split nodes, so they do not show as
+ground surface. A cut plane clips the surface and draws the field on the
+section of every tetrahedron it crosses, interpolated linearly along the
+edges. three.js 0.160 (MIT licence, in `lythos3d/io/vendor`) is inlined as
+data URLs in an import map, so a report opens without a network.
