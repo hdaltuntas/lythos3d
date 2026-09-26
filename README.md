@@ -86,6 +86,10 @@ whose failure is bounded at its ends. Lythos 3D is for those.
   tracked point by point, and undrained strength from `c'`, `φ'` or given as
   `su` (growing with depth if need be). A stage marked `drained` lets the
   excess pore pressure dissipate and the soil consolidate.
+- **Consolidation in time** (Biot): displacement and excess pore pressure
+  solved together (Taylor–Hood), stage by stage over a given time, with
+  the ground surface and chosen box sides drained. Settlement and pore
+  pressure against time come with each stage.
 - **ParaView output** (`.vtu`): displacements, smoothed stresses and plastic
   strain on quadratic cells, stage by stage, with excavated ground left out.
 
@@ -184,7 +188,10 @@ A clay loaded undrained takes `drainage="undrained"`, with effective
 parameters, or with `phi=0.0, c=su` (and `c_inc`, `z_ref` for a strength
 growing with depth). `Stage(..., drained=True)` lets its excess pore
 pressure go. `result.excess_pore_pressure` holds it, and it is part of
-`result.pore_pressure`.
+`result.pore_pressure`. `Stage("wait", kind="consolidation", time=30,
+drained_sides=("base",))` lets 30 days pass (with `k` in m/day), and
+`result.consolidation` lists time, largest excess pore pressure and
+largest displacement after every step.
 
 The stresses reported are effective. `result.pore_pressure` holds the pore
 pressure at the Gauss points, and ParaView gets `pore_pressure` and
@@ -268,6 +275,7 @@ Every row is a test in `tests/`:
 | Fill layer over the site | `γf t H / M`, fill under its own weight | exact |
 | Embankment drawn in plan over sloping ground, two lifts | volume above the ground | within 2% |
 | Undrained then drained 1D loading | `qH/(M + Kw/n)`, then `qH/M` | exact |
+| 1D consolidation, one- and two-way drainage | Terzaghi | settlement within 0.5% (40 steps) |
 | Strip footing on undrained clay, slice (`pytest -m slow`) | Prandtl `(2 + π) su` | 3.1% over (0.5 m), 1.6% (0.25 m) |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
@@ -313,8 +321,7 @@ which it sums. So a repeated run can land one bracket lower.
    checked against 2D Lythos in plane strain.~~
    ~~Groundwater, hydrostatic pore pressure and steady seepage.~~
    ~~Undrained analysis.~~
-   ~~Constructing volumes (fill).~~
-   Still to come here: consolidation in time.
+   ~~Constructing volumes (fill), consolidation in time.~~
 3. ~~**Geometry**: soil layers from boreholes, excavations drawn in plan,
    meshed by gmsh, site files.~~
    ~~Ground loads on an irregular surface.~~

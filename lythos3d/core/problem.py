@@ -23,6 +23,7 @@ from .water import DryField, HydrostaticField, PoreField, Seepage, WaterTable
 INITIAL = "initial"
 PLASTIC = "plastic"
 SSR = "ssr"
+CONSOLIDATION = "consolidation"
 
 
 @dataclass
@@ -38,7 +39,9 @@ class Stage:
 
     ``kind`` is ``"initial"`` for the initial stresses (by ``initial_stress``:
     ``"k0"`` or ``"gravity"``), ``"plastic"`` for an ordinary construction
-    step, and ``"ssr"`` for a factor of safety by strength reduction.
+    step, ``"ssr"`` for a factor of safety by strength reduction, and
+    ``"consolidation"`` for ``time`` passing while the excess pore pressure
+    drains away (its loads and construction are spread over that time).
 
     ``water`` is the :class:`~lythos3d.core.water.WaterTable` from this stage
     on; ``None`` keeps the last one (the problem's own at the start).
@@ -63,9 +66,14 @@ class Stage:
     srf_max: float = 3.0
     water: WaterTable | None = None
     drained: bool = False
+    #: consolidation: the time the stage lasts (in the time unit of the
+    #: permeabilities), and the sides of the model box that drain besides
+    #: the ground surface ("xmin", "xmax", "ymin", "ymax", "base")
+    time: float = 0.0
+    drained_sides: tuple[str, ...] = ()
 
     def __post_init__(self):
-        if self.kind not in (INITIAL, PLASTIC, SSR):
+        if self.kind not in (INITIAL, PLASTIC, SSR, CONSOLIDATION):
             raise ValueError(f"stage {self.name!r}: unknown kind {self.kind!r}")
         if self.initial_stress not in ("k0", "gravity"):
             raise ValueError(f"stage {self.name!r}: initial_stress must be 'k0' or 'gravity'")
@@ -73,6 +81,9 @@ class Stage:
         self.construct = tuple(self.construct)
         self.install = tuple(self.install)
         self.loads = tuple(self.loads)
+        self.drained_sides = tuple(self.drained_sides)
+        if self.kind == CONSOLIDATION and self.time <= 0:
+            raise ValueError(f"stage {self.name!r}: a consolidation stage needs a positive time")
 
 
 @dataclass

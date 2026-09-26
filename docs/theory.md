@@ -693,3 +693,41 @@ stronger there than an effective-stress contact would be. For `φ = 0`
 The footing converges on Prandtl's value from above as the mesh is refined
 (3.1% and then 1.6% over it), as a displacement-based mesh should. The water's
 stiffness at `νu` = 0.495 does not lock the quadratic tetrahedra.
+
+## Consolidation
+
+A stage of kind `"consolidation"` lets `time` pass while the excess pore
+pressure flows away (Biot's coupled equations). Displacements stay on the
+10-node tetrahedra. The excess pore pressure lives on their corners and
+varies linearly: the Taylor–Hood pair, which satisfies the inf-sup
+condition, so the pressure does not oscillate just after a load as
+equal-order interpolation does. With `Q = ∫Bᵀ m N_p dV`, flow
+`H = ∫∇N_pᵀ (k/γw) ∇N_p dV` and storage `S = ∫N_pᵀ (n/K_w) N_p dV`, each
+backward Euler step solves, by Newton with the soil's consistent tangent,
+
+```
+[ K     −Q        ] [Δu]   [ f_ext − f_int + Q p                  ]
+[ −Qᵀ   −(S + Δt H)] [Δp] = [ Qᵀ(u − uₙ) + S(p − pₙ) + Δt H p      ]
+```
+
+- **Storage.** `n/K_w` is the inverse of the same water bulk modulus the
+  undrained stages use. The pressure a consolidation stage starts from is
+  therefore the one the undrained stage before it built up, projected to
+  the corners.
+- **Boundaries.** The ground surface drains, and so do the box sides named
+  in `drained_sides` (`"base"` for a sand layer below). The rest is closed,
+  as is a wall with an interface once installed.
+- **Loads.** Loads and construction in a consolidation stage are applied in
+  proportion to the time elapsed. The pressure on the drained boundary
+  drops at once, as in Terzaghi's problem.
+- **Time steps.** They grow geometrically, each `1 + 2/n` times the last, so
+  the first steps resolve the fast early dissipation. The last ones still
+  shrink as `n` grows, which backward Euler, being first order, needs. A step
+  that will not converge is split.
+- **Afterwards.** The pressure left is handed back to the Gauss points as
+  excess pore pressure, for the undrained stages that follow.
+
+Against Terzaghi (one-way and two-way drainage, `Tv` = 0.05, 0.3 and 1), the
+settlement is within 0.6% at 20 steps per stage and 0.14% at 80. The
+pressure at the far end of the drainage path lags a little, by 5% at 40
+steps and 2.6% at 160, as backward Euler does.

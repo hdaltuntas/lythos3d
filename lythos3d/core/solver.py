@@ -16,7 +16,7 @@ import numpy as np
 
 from .assembly import LinearSolver, assemble_vector, solve_constrained
 from .materials import MaterialState
-from .problem import INITIAL, SSR, Problem, Stage
+from .problem import CONSOLIDATION, INITIAL, SSR, Problem, Stage
 
 
 @dataclass
@@ -70,6 +70,11 @@ class StageResult:
     #: excess pore pressure at the Gauss points from undrained loading
     #: (included in ``pore_pressure``)
     excess_pore_pressure: np.ndarray | None = None
+    #: consolidation: (time since the start of the analysis, largest excess
+    #: pore pressure, largest displacement since the reset) after each step
+    consolidation: list = field(default_factory=list)
+    #: time at the end of the stage (consolidation stages advance it)
+    time: float = 0.0
     head: np.ndarray | None = None
     velocity: np.ndarray | None = None
     flows: dict = field(default_factory=dict)
@@ -125,6 +130,8 @@ class Solver:
         self._contact_frozen = None
         #: the water table in force
         self._water = problem.water
+        #: time elapsed in consolidation stages
+        self._time = 0.0
         #: the pore pressure field that goes with it and the ground as it is
         self._field = None
         self._undrained = True
@@ -187,8 +194,8 @@ class Solver:
         # undrained soil is undrained except in a stage marked drained (and
         # the initial stresses); a drained stage lets the excess pore
         # pressure go, and the soil consolidates under the load it carried
-        self._undrained = not (stage.drained or stage.kind == INITIAL)
-        if not self._undrained and self._state.excess is not None:
+        self._undrained = not (stage.drained or stage.kind in (INITIAL, CONSOLIDATION))
+        if (stage.drained or stage.kind == INITIAL) and self._state.excess is not None:
             self._state.excess[:] = 0.0
         if stage.kind != SSR or self._field is None:
             # strength reduction changes neither the ground nor the water
@@ -197,6 +204,10 @@ class Solver:
             result = self._initial_stage(stage, active)
         elif stage.kind == SSR:
             result = self._ssr_stage(stage, active)
+        elif stage.kind == CONSOLIDATION:
+            if stage.reset_displacements:
+                self._u_offset = self._u.copy()
+            result = self._consolidation_stage(stage, active)
         else:
             if stage.reset_displacements:
                 self._u_offset = self._u.copy()
@@ -208,6 +219,7 @@ class Solver:
         result.plate_forces, result.bar_forces = self._structure_forces(self._u)
         result.interface_tractions = self._interface_tractions(active)
         result.pile_forces = self._pile_forces()
+        result.time = self._time
         result.excess_pore_pressure = self._state.excess.copy()
         result.pore_pressure = self._field.gauss + result.excess_pore_pressure
         result.head, result.velocity = self._field.head, self._field.velocity
@@ -431,6 +443,106 @@ class Solver:
         return StageResult(name=label, kind=stage.kind, converged=lam >= 1.0 - 1e-10,
                            displacement=self._nodal(self._u - self._u_offset),
                            state=self._state, active=active, iterations=logs, message=message)
+
+    def _consolidation_stage(self, stage: Stage, active: np.ndarray) -> StageResult:
+        """Time passing: the excess pore pressure flows away and the soil consolidates (Biot).
+
+        See :mod:`lythos3d.core.consolidation`.  The stage's loads and
+        construction are applied in proportion to the time elapsed.  A time
+        step that will not converge is split in two.
+        """
+        import scipy.sparse as sp
+
+        from .consolidation import PressureSpace, time_steps
+        from .water import GAMMA_WATER
+
+        p = self.p
+        ce = p.continuum
+        ngp = ce.n_gauss
+        gamma_w = getattr(self._water, "gamma_w", GAMMA_WATER)
+        space = PressureSpace(p, active, installed=tuple(self._plate_reference),
+                              drained_sides=stage.drained_sides, gamma_w=gamma_w)
+        n_u, n_p = p.n_dof, space.n
+        pres = space.from_gauss(self._state.excess, ngp)
+        undrained = pres.copy()
+        # the drained boundary drains at once: its pressure goes to zero at
+        # the start, and the imbalance that leaves is no part of the load
+        # to be spread over the stage
+        pres[space.drained] = 0.0
+        self._state.excess[:] = 0.0
+
+        Q = sp.coo_matrix((space.Qe.ravel(),
+                           (np.repeat(space.udofs[:, :, None], 4, axis=2).ravel(),
+                            np.repeat(space.pdofs[:, None, :], 30, axis=1).ravel())),
+                          shape=(n_u, n_p)).tocsr()
+        pr_rows = np.repeat(space.pdofs, 4, axis=1).ravel()
+        pr_cols = np.tile(space.pdofs, (1, 4)).ravel()
+        S = sp.coo_matrix((space.Se.ravel(), (pr_rows, pr_cols)), shape=(n_p, n_p)).tocsr()
+        H = sp.coo_matrix((space.He.ravel(), (pr_rows, pr_cols)), shape=(n_p, n_p)).tocsr()
+
+        fixed_u = np.union1d(p.fixed, self._orphan_dofs(active))
+        fixed = np.concatenate([fixed_u, n_u + space.drained])
+        f_ext = (p.gravity(active, self._field) + p.water_loads(self._field, active)
+                 + p.surface_loads(stage.loads, active) + self._structure_loads())
+        u_n, p_n, state_n = self._u.copy(), pres.copy(), self._state.copy()
+        f_int0 = self._internal(u_n, u_n, state_n, active, False)[0] - Q @ undrained
+        scale = max(np.linalg.norm(f_ext), np.linalg.norm(f_int0), 1e-8)
+        linear = type(self.linear)(self.backend)
+        steps = list(time_steps(stage.time, max(stage.increments, 1)))
+        logs, history = [], []
+        elapsed, splits, message, i = 0.0, 0, "", 0
+        while i < len(steps):
+            dt = steps[i]
+            target = f_int0 + (elapsed + dt) / stage.time * (f_ext - f_int0)
+            C = (S + dt * H).tocsr()
+            u, pr = u_n.copy(), p_n.copy()
+            ok = False
+            for it in range(self.max_iterations):
+                f_int, tangent, _ = self._internal(u, u_n, state_n, active, True)
+                Ru = target - f_int + Q @ pr
+                Ru[fixed_u] = 0.0
+                flow_terms = (Q.T @ (u - u_n), S @ (pr - p_n), dt * (H @ pr))
+                Rp = flow_terms[0] + flow_terms[1] + flow_terms[2]
+                Rp[space.drained] = 0.0
+                p_scale = max(max(np.linalg.norm(t) for t in flow_terms), 1e-12 * scale)
+                ru, rp = np.linalg.norm(Ru) / scale, np.linalg.norm(Rp) / p_scale
+                logs.append(IterationLog(len(logs), it, max(ru, rp)))
+                if ru < self.tol and rp < self.tol:
+                    ok = True
+                    break
+                A = sp.bmat([[tangent(), -Q], [-Q.T, -C]], format="csr")
+                try:
+                    delta = solve_constrained(A, np.concatenate([Ru, Rp]), fixed, np.zeros(len(fixed)),
+                                              solver=linear)
+                except np.linalg.LinAlgError:
+                    break
+                linear.forget()
+                u = u + delta[:n_u]
+                pr = pr + delta[n_u:]
+                if not np.all(np.isfinite(u)):
+                    break
+            if ok:
+                state_n = self._internal(u, u_n, state_n, active, False, return_state=True)[2]
+                u_n, p_n = u, pr
+                elapsed += dt
+                history.append((self._time + elapsed, float(np.abs(p_n).max(initial=0.0)),
+                                float(np.linalg.norm(self._nodal(u_n - self._u_offset), axis=1).max())))
+                i += 1
+            else:
+                splits += 1
+                if splits > 20:
+                    message = f"no equilibrium after {elapsed:g} of {stage.time:g}"
+                    break
+                steps[i:i + 1] = [0.5 * dt, 0.5 * dt]
+        linear.release()
+        self._time += elapsed
+        self._u, self._state = u_n, state_n
+        self._state.excess[:] = space.to_gauss(p_n, ce.n_elements, ngp)
+        res = StageResult(name=stage.name, kind=stage.kind, converged=i == len(steps),
+                          displacement=self._nodal(self._u - self._u_offset), state=self._state,
+                          active=active, iterations=logs, message=message)
+        res.consolidation = history
+        return res
 
     def _limit_step(self, du: np.ndarray) -> np.ndarray:
         """Cap a Newton step so one bad tangent cannot throw the solution away."""
