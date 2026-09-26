@@ -256,6 +256,7 @@ walls. The mesh has 2.5 m elements, and each width was run once:
 | --- | --- |
 | 10 m | 1.839 |
 | 20 m | 1.589 |
+| 40 m | 1.501 |
 | infinite (plane strain) | 1.430 |
 
 The ends carry part of the sliding mass, so a narrow slope is markedly safer
