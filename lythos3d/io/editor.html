@@ -80,6 +80,7 @@ svg text { font: 11px system-ui, sans-serif; fill: var(--muted); }
   <span class="sep"></span>
   <button id="fit" title="fit the drawing to the view">Fit</button>
   <button id="toggle3d" title="see the model in 3D: soils from the boreholes, pits, walls, fills and structures">3D view</button>
+  <button id="results3d" hidden title="the results of the last analysis in 3D: contours, deformed shape, cut planes">Results</button>
   <select id="lang" title="language / dil"><option value="en">English</option><option value="tr">Türkçe</option></select>
   <span id="server" hidden>
     <span class="sep"></span>
@@ -98,6 +99,7 @@ svg text { font: 11px system-ui, sans-serif; fill: var(--muted); }
 </header>
 <main>
   <div id="plan"><svg id="svg"></svg><div id="hint"></div><div id="status"></div>
+    <iframe id="resultsframe" title="results" hidden style="position:absolute;inset:0;width:100%;height:100%;border:0;background:var(--canvas)"></iframe>
     <div id="view3d"><div id="opts3d">
       <label title="cut away the near sides and see the pits, walls and piles inside"><input type="checkbox" id="xray3d" checked> see inside</label>
       <label>vertical scale <select id="vscale3d"><option>1</option><option>2</option><option>3</option></select></label>
@@ -171,7 +173,7 @@ const TR = {
   "slow solver - see Run tab": "yavaş çözücü - Analiz sekmesine bakın",
   "pypardiso is not installed, so the slow SuperLU solver is used: a site of useful size may take hours. Stop the interface and run: pip install pypardiso":
     "pypardiso kurulu değil, bu yüzden yavaş SuperLU çözücüsü kullanılıyor: gerçekçi boyutta bir saha saatler sürebilir. Arayüzü durdurup çalıştırın: pip install pypardiso",
-  "done": "bitti", "failed": "başarısız", "base": "taban",
+  "done": "bitti", "failed": "başarısız", "base": "taban", "Results": "Sonuçlar", "Model": "Model",
 };
 let lang = "en";
 try { lang = localStorage.getItem("lythos3d-lang") || (navigator.language || "en").slice(0, 2); } catch (e) { lang = (navigator.language || "en").slice(0, 2); }
@@ -652,11 +654,18 @@ async function poll() {
     const rs = document.getElementById("runstate");
     rs.textContent = runState.status === "running" ? `${runState.progress[2]}…` : runState.status === "done" ? t("done") : runState.status === "failed" ? t("failed") : "";
     document.getElementById("report").disabled = !runState.report;
+    document.getElementById("results3d").hidden = !runState.viewer;
     document.getElementById("run").disabled = runState.status === "running";
     document.getElementById("stop").hidden = runState.status !== "running";
     if (tab === "log") logPane();
-    if (runState.status !== "running" && polling) { clearInterval(polling); polling = null; if (runState.report) window.open("report", "_blank"); }
+    if (runState.status !== "running" && polling) { clearInterval(polling); polling = null; if (runState.viewer) showResults(true); }
   } catch (e) { /* the server has stopped */ }
+}
+function showResults(on) {
+  // the results of the last analysis in place of the plan: the report's 3D viewer, served
+  const frame = document.getElementById("resultsframe"), b = document.getElementById("results3d");
+  if (on) frame.src = `viewer?${Date.now()}`;
+  frame.hidden = !on; b.classList.toggle("on", on); b.textContent = t(on ? "Model" : "Results");
 }
 async function serverMode() {
   let list;
@@ -686,6 +695,7 @@ async function serverMode() {
     showTab("log"); if (!polling) polling = setInterval(poll, 1000); poll();
   };
   document.getElementById("report").onclick = () => window.open("report", "_blank");
+  document.getElementById("results3d").onclick = () => showResults(document.getElementById("resultsframe").hidden);
   poll();
 }
 const langSel = document.getElementById("lang");
@@ -935,6 +945,7 @@ function resize() { if (!renderer) return; const w = box.clientWidth, h = box.cl
 
 const btn = document.getElementById("toggle3d");
 btn.onclick = async () => {
+  window.showResults?.(false);
   on = !on; planDiv.classList.toggle("three", on); btn.classList.toggle("on", on); btn.textContent = window.t(on ? "Plan view" : "3D view");
   if (on) await build();
 };

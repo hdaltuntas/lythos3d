@@ -64,12 +64,14 @@ class Session:
         self.started = 0.0
         self.detail = ""
         self.cancel = False
+        self.viewer = None
 
     def state(self) -> dict:
         with self.lock:
             return {"status": self.status, "log": self.log[-200:], "progress": list(self.progress),
                     "detail": self.detail,
-                    "report": self.report is not None, "folder": self.folder, "error": self.error,
+                    "report": self.report is not None, "viewer": self.viewer is not None,
+                    "folder": self.folder, "error": self.error,
                     "seconds": round(time.time() - self.started, 1) if self.started else 0.0}
 
     def say(self, line: str) -> None:
@@ -82,7 +84,7 @@ class Session:
                 return False, "an analysis is already running"
             self.status, self.log, self.report, self.error = "running", [], None, ""
             self.progress, self.started, self.folder = (0, 0, "checking the site"), time.time(), None
-            self.detail, self.cancel = "", False
+            self.detail, self.cancel, self.viewer = "", False, None
         threading.Thread(target=self._run, args=(site_dict, fos, fineness, lang), daemon=True).start()
         return True, ""
 
@@ -103,7 +105,7 @@ class Session:
 
             from .core.solver import Solver
             from .io.site_json import save_site, site_from_dict
-            from .io.viewer import write_report
+            from .io.viewer import write_report, write_viewer
             from .io.vtu import write_plates, write_stage
 
             from .core.assembly import LinearSolver
@@ -162,6 +164,11 @@ class Session:
                     break
             report = write_report(os.path.join(folder, "report.html"), problem, results, title=site.name,
                                   lang=lang)
+            # the viewer alone, for the interface's own results view; served, so three.js comes from us
+            viewer = write_viewer(os.path.join(folder, "viewer.html"), problem, results, title=site.name,
+                                  lang=lang, offline=True)
+            with self.lock:
+                self.viewer = viewer
             with self.lock:
                 self.report = report
                 self.progress = (len(stages), len(stages), "done")
@@ -251,6 +258,12 @@ def make_handler(session: Session):
                         self._send(200, fh.read(), "text/javascript; charset=utf-8")
                 else:
                     self._send(404, b"not found", "text/plain")
+            elif url.path == "/viewer":
+                if session.viewer and os.path.exists(session.viewer):
+                    with open(session.viewer, "rb") as fh:
+                        self._send(200, fh.read(), "text/html; charset=utf-8")
+                else:
+                    self._send(404, b"no results yet", "text/plain")
             elif url.path == "/report":
                 if session.report and os.path.exists(session.report):
                     with open(session.report, "rb") as fh:

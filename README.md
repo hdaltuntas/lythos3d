@@ -175,6 +175,10 @@ exaggerated.
 
 ![The model in 3D, before meshing](docs/images/model3d.png)
 
+When an analysis is done, **Results** shows it in the same screen: the 3D
+viewer with contours, the deformed shape and cut planes. **Model** goes back
+to drawing.
+
 The interface, the report and its 3D viewer are in English or Turkish (the
 menu next to **3D view**; the browser's language by default). `lythos3d run
 --lang tr` writes a Turkish report.
