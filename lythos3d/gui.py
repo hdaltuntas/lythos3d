@@ -177,6 +177,30 @@ class Session:
                 self.log.append(traceback.format_exc(limit=3))
 
 
+def profile_grid(site_dict: dict, n: int = 41) -> dict:
+    """The top of every soil on a plan grid over the site, from its boreholes, for the 3D view.
+
+    The same interpolation meshing uses, so what the view shows is what gets
+    analysed.
+    """
+    import numpy as np
+
+    from .core.site import Borehole, Soil, SoilProfile
+
+    soils = [Soil(str(s["name"]), None) for s in site_dict.get("soils", [])]
+    holes = [Borehole(str(b["name"]), float(b["x"]), float(b["y"]), [(str(a), float(z)) for a, z in b["tops"]])
+             for b in site_dict.get("boreholes", [])]
+    profile = SoilProfile(soils, holes, float(site_dict["bottom"]))
+    (x0, x1), (y0, y1) = site_dict["extent"]["x"], site_dict["extent"]["y"]
+    ny = max(2, int(round(n * (y1 - y0) / max(x1 - x0, y1 - y0))))
+    nx = max(2, int(round(n * (x1 - x0) / max(x1 - x0, y1 - y0))))
+    xs, ys = np.linspace(x0, x1, nx), np.linspace(y0, y1, ny)
+    X, Y = np.meshgrid(xs, ys)
+    tops = profile.tops(np.column_stack([X.ravel(), Y.ravel()]))
+    return {"xs": xs.tolist(), "ys": ys.tolist(), "soils": [s.name for s in soils],
+            "tops": tops.T.reshape(len(soils), ny, nx).tolist(), "bottom": profile.bottom}
+
+
 def make_handler(session: Session):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):                                # quiet
@@ -217,6 +241,13 @@ def make_handler(session: Session):
                     self._json({"error": f"no example {name!r}"}, 404)
                 else:
                     self._json(site_to_dict(found[1]()))
+            elif url.path.startswith("/vendor/") and "/" not in url.path[len("/vendor/"):]:
+                path = os.path.join(os.path.dirname(__file__), "io", "vendor", url.path[len("/vendor/"):])
+                if os.path.exists(path):
+                    with open(path, "rb") as fh:
+                        self._send(200, fh.read(), "text/javascript; charset=utf-8")
+                else:
+                    self._send(404, b"not found", "text/plain")
             elif url.path == "/report":
                 if session.report and os.path.exists(session.report):
                     with open(session.report, "rb") as fh:
@@ -228,6 +259,12 @@ def make_handler(session: Session):
 
         def do_POST(self):
             url = urlparse(self.path)
+            if url.path == "/api/profile":
+                try:
+                    body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                    return self._json(profile_grid(body.get("site", {})))
+                except Exception as err:                           # the page falls back on its own
+                    return self._json({"error": f"{type(err).__name__}: {err}"}, 400)
             if url.path == "/api/stop":
                 session.stop()
                 return self._json({"ok": True})

@@ -154,6 +154,20 @@ meshed and analysed stage by stage, the progress is shown as it goes, and
 the report opens when it is done. Each analysis keeps its `site.json`,
 report and ParaView files in a folder of its own under `~/lythos3d_runs`.
 
+The **3D view** button switches the same screen from the plan to the model
+in 3D, before any meshing. It shows:
+
+- the soils between the boreholes, on the ground and on the sides of the
+  model, interpolated exactly as the mesh will be;
+- the pits with their lifts, the walls down to their toes, fills, loads,
+  anchors, piles and boreholes;
+- the water table.
+
+**See inside** cuts away the near sides. The vertical scale can be
+exaggerated.
+
+![The model in 3D, before meshing](docs/images/model3d.png)
+
 `lythos3d editor` writes the same plan editor as a standalone file: a single HTML file that works
 offline. In it you draw the model extent, boreholes, pits, walls, fills,
 area loads, anchors and piles, enter the soils and the water level, and save

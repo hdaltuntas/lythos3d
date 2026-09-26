@@ -5,6 +5,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lythos 3D plan editor</title>
+<script type="importmap">{"imports": {"three": "./vendor/three.module.min.js", "three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js"}}</script>
 <style>
 :root { --bg: #f6f7f9; --ink: #1b1f24; --muted: #5b6470; --line: #d5dae1; --panel: #ffffff; --canvas: #fbfcfd;
         --accent: #2563eb; --accent-ink: #ffffff; --grid: #e7ebf0; --grid-major: #d3d9e1; --bad: #dc2626; --ok: #16a34a;
@@ -27,6 +28,15 @@ button.on { background: var(--accent); color: var(--accent-ink); border-color: v
 main { flex: 1; display: flex; min-height: 0; }
 #plan { flex: 1; min-width: 0; position: relative; background: var(--canvas); touch-action: none; }
 #plan svg { width: 100%; height: 100%; display: block; user-select: none; }
+#view3d { position: absolute; inset: 0; display: none; background: var(--canvas); }
+#view3d canvas { display: block; width: 100%; height: 100%; }
+#plan.three #view3d { display: block; }
+#plan.three svg, #plan.three #hint, #plan.three #status { visibility: hidden; }
+#legend3d { position: absolute; right: 10px; bottom: 8px; background: var(--panel); border: 1px solid var(--line);
+            border-radius: 6px; padding: 6px 8px; font-size: 12px; max-width: calc(100% - 20px); }
+#legend3d span.sw { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 8px; vertical-align: -1px; }
+#opts3d { position: absolute; left: 10px; top: 8px; background: var(--panel); border: 1px solid var(--line);
+          border-radius: 6px; padding: 4px 8px; font-size: 12px; color: var(--muted); display: flex; gap: 10px; flex-wrap: wrap; }
 #status { position: absolute; left: 10px; bottom: 8px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums;
           background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
 #hint { position: absolute; left: 10px; top: 8px; color: var(--muted); font-size: 12px; background: var(--panel);
@@ -69,6 +79,7 @@ svg text { font: 11px system-ui, sans-serif; fill: var(--muted); }
   <span id="tools"></span>
   <span class="sep"></span>
   <button id="fit" title="fit the drawing to the view">Fit</button>
+  <button id="toggle3d" title="see the model in 3D: soils from the boreholes, pits, walls, fills and structures">3D view</button>
   <span id="server" hidden>
     <span class="sep"></span>
     <select id="examples" title="load an example site"><option value="">Examples…</option></select>
@@ -85,7 +96,11 @@ svg text { font: 11px system-ui, sans-serif; fill: var(--muted); }
   <input type="file" id="dxffile" accept=".dxf" hidden>
 </header>
 <main>
-  <div id="plan"><svg id="svg"></svg><div id="hint"></div><div id="status"></div></div>
+  <div id="plan"><svg id="svg"></svg><div id="hint"></div><div id="status"></div>
+    <div id="view3d"><div id="opts3d">
+      <label title="cut away the near sides and see the pits, walls and piles inside"><input type="checkbox" id="xray3d" checked> see inside</label>
+      <label>vertical scale <select id="vscale3d"><option>1</option><option>2</option><option>3</option></select></label>
+      <span id="note3d"></span></div><div id="legend3d"></div></div></div>
   <aside>
     <div class="tabs"><button data-tab="item" class="on">Item</button><button data-tab="soils">Soils</button><button data-tab="site">Site</button><button data-tab="check">Check</button><button data-tab="log" id="logtab" hidden>Run</button></div>
     <div class="pane" id="pane"></div>
@@ -304,7 +319,7 @@ function field(form, label, value, onchange, type = "number", options = null) {
   else if (type === "textarea") { input = document.createElement("textarea"); input.value = value; }
   else if (type === "checkbox") { input = document.createElement("input"); input.type = "checkbox"; input.checked = !!value; input.style.width = "auto"; }
   else { input = document.createElement("input"); input.type = type; input.value = value ?? ""; if (type === "number") input.step = "any"; }
-  input.onchange = () => { onchange(type === "checkbox" ? input.checked : type === "number" ? (input.value === "" ? null : Number(input.value)) : input.value); draw(); };
+  input.onchange = () => { onchange(type === "checkbox" ? input.checked : type === "number" ? (input.value === "" ? null : Number(input.value)) : input.value); draw(); window.refresh3d?.(); };
   form.appendChild(input); return input;
 }
 const list = s => s.split(/[,;\s]+/).filter(Boolean).map(Number);
@@ -565,7 +580,7 @@ async function serverMode() {
   ex.onchange = async () => {
     if (!ex.value) return;
     if (Object.values(LISTS).some(k => site[k].length) && !confirm("Replace the site you have drawn with the example?")) { ex.value = ""; return; }
-    site = fromJSON(await (await fetch(`api/example?name=${encodeURIComponent(ex.value)}`)).json()); sel = null; ex.value = ""; fit(); showTab("item");
+    site = fromJSON(await (await fetch(`api/example?name=${encodeURIComponent(ex.value)}`)).json()); sel = null; ex.value = ""; fit(); showTab("item"); window.refresh3d?.();
   };
   document.getElementById("run").onclick = async () => {
     const bad = problems(); if (bad.length) { showTab("check"); return; }
@@ -579,6 +594,246 @@ async function serverMode() {
   poll();
 }
 fit(); showTab(); serverMode();
+</script>
+<script type="module">
+// ------------------------------------------------------------------ 3D view
+// The model as it will be analysed, before any meshing: the soils between
+// the boreholes (interpolated by the server exactly as meshing does; by
+// inverse distance when the editor is opened as a file), and every pit,
+// wall, fill, load, anchor, pile and borehole drawn, with the water table.
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const box = document.getElementById("view3d"), planDiv = document.getElementById("plan");
+const PALETTE = ["#d9a441", "#6b8e23", "#a0522d", "#5b7fa6", "#c77d9b", "#7a9e9f", "#b8860b", "#556b2f"];
+let renderer = null, scene, camera, controls, on = false;
+
+function colourOf(i) { return new THREE.Color(PALETTE[i % PALETTE.length]); }
+
+function idwProfile() {
+  // what SoilProfile does, with inverse-distance weighting in place of the triangulation
+  const names = site.soils.map(q => q.name), n = names.length, bottom = site.bottom;
+  const holes = site.boreholes.map(b => {
+    const present = new Map(b.tops.map(([nm, z]) => [names.indexOf(nm), Number(z)]));
+    const tops = new Array(n); let below = bottom;
+    for (let k = n - 1; k >= 0; k--) { if (present.has(k)) below = present.get(k); tops[k] = below; }
+    const first = Math.min(...[...present.keys()].filter(k => k >= 0));
+    for (let k = 0; k < first; k++) tops[k] = b.tops[0][1];
+    return {x: b.x, y: b.y, tops};
+  });
+  const nx = 41, ny = Math.max(2, Math.round(41 * (site.extent.y[1] - site.extent.y[0]) / Math.max(site.extent.x[1] - site.extent.x[0], site.extent.y[1] - site.extent.y[0])));
+  const xs = [...Array(nx)].map((_, i) => site.extent.x[0] + i * (site.extent.x[1] - site.extent.x[0]) / (nx - 1));
+  const ys = [...Array(ny)].map((_, j) => site.extent.y[0] + j * (site.extent.y[1] - site.extent.y[0]) / (ny - 1));
+  const tops = [...Array(n)].map(() => [...Array(ny)].map(() => new Array(nx).fill(bottom)));
+  for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++) {
+    let wsum = 0; const acc = new Array(n).fill(0);
+    for (const h of holes) {
+      const d2 = (h.x - xs[i]) ** 2 + (h.y - ys[j]) ** 2, w = 1 / Math.max(d2, 1e-9);
+      wsum += w; for (let k = 0; k < n; k++) acc[k] += w * h.tops[k];
+    }
+    let prev = Infinity;
+    for (let k = 0; k < n; k++) { const v = holes.length ? Math.max(bottom, Math.min(prev, acc[k] / wsum)) : 0; tops[k][j][i] = v; prev = v; }
+  }
+  return {xs, ys, tops, bottom, approximate: true};
+}
+
+async function profile() {
+  if (!site.boreholes.length || !site.soils.length) return null;
+  if (document.getElementById("server") && !document.getElementById("server").hidden) {
+    try {
+      const r = await fetch("api/profile", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({site: toJSON()})});
+      if (r.ok) return await r.json();
+    } catch (e) { /* fall back */ }
+  }
+  return idwProfile();
+}
+
+function sampler(g) {
+  // bilinear interpolation of a grid layer at plan points
+  const {xs, ys} = g;
+  return (layer, x, y) => {
+    const fx = Math.min(Math.max((x - xs[0]) / (xs[xs.length - 1] - xs[0]) * (xs.length - 1), 0), xs.length - 1.000001);
+    const fy = Math.min(Math.max((y - ys[0]) / (ys[ys.length - 1] - ys[0]) * (ys.length - 1), 0), ys.length - 1.000001);
+    const i = Math.floor(fx), j = Math.floor(fy), a = fx - i, b = fy - j, t = g.tops[layer];
+    return (1 - a) * (1 - b) * t[j][i] + a * (1 - b) * t[j][i + 1] + (1 - a) * b * t[j + 1][i] + a * b * t[j + 1][i + 1];
+  };
+}
+
+function outward(positions, dir) {
+  // wind every triangle so that its normal points along dir (outwards)
+  for (let t = 0; t < positions.length; t += 9) {
+    const a = new THREE.Vector3(positions[t], positions[t + 1], positions[t + 2]);
+    const b = new THREE.Vector3(positions[t + 3], positions[t + 4], positions[t + 5]);
+    const c = new THREE.Vector3(positions[t + 6], positions[t + 7], positions[t + 8]);
+    const n = b.clone().sub(a).cross(c.clone().sub(a));
+    if (n.dot(dir) < 0) for (let k = 0; k < 3; k++) { const tmp = positions[t + 3 + k]; positions[t + 3 + k] = positions[t + 6 + k]; positions[t + 6 + k] = tmp; }
+  }
+  return positions;
+}
+function mesh(positions, colour, opts = {}) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  if (opts.colors) geo.setAttribute("color", new THREE.Float32BufferAttribute(opts.colors, 3));
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshLambertMaterial({color: opts.colors ? 0xffffff : colour, vertexColors: !!opts.colors, side: opts.side ?? THREE.DoubleSide,
+    transparent: opts.opacity !== undefined, opacity: opts.opacity ?? 1, depthWrite: opts.opacity === undefined});
+  return new THREE.Mesh(geo, mat);
+}
+function lines(points, colour) {
+  const geo = new THREE.BufferGeometry(); geo.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
+  return new THREE.LineSegments(geo, new THREE.LineBasicMaterial({color: colour}));
+}
+function prism(poly, zlo, zhi, colour, opacity, V) {
+  // closed prism over a plan polygon: walls, top and bottom (fan triangulation, fine for the convex-ish outlines drawn)
+  const p = [], e = [];
+  for (let a = 0; a < poly.length; a++) {
+    const [x1, y1] = poly[a], [x2, y2] = poly[(a + 1) % poly.length], z1 = zlo(x1, y1) * V, z2 = zlo(x2, y2) * V, t1 = zhi(x1, y1) * V, t2 = zhi(x2, y2) * V;
+    p.push(x1, y1, z1, x2, y2, z2, x2, y2, t2, x1, y1, z1, x2, y2, t2, x1, y1, t1);
+    e.push(x1, y1, t1, x2, y2, t2, x1, y1, z1, x2, y2, z2, x1, y1, z1, x1, y1, t1);
+  }
+  const shape = new THREE.Shape(poly.map(q => new THREE.Vector2(q[0], q[1])));
+  const tris = THREE.ShapeUtils.triangulateShape(shape.getPoints(), []);
+  for (const [a, b, c] of tris) for (const f of [zlo, zhi]) for (const k of [a, b, c]) p.push(poly[k][0], poly[k][1], f(poly[k][0], poly[k][1]) * V);
+  const g = new THREE.Group(); g.add(mesh(p, colour, {opacity})); g.add(lines(e, colour)); return g;
+}
+
+async function build() {
+  const w = box.clientWidth, h = box.clientHeight;
+  if (!renderer) {
+    renderer = new THREE.WebGLRenderer({antialias: true});
+    renderer.setPixelRatio(window.devicePixelRatio);
+    box.prepend(renderer.domElement);
+    camera = new THREE.PerspectiveCamera(40, 1, 0.1, 5000); camera.up.set(0, 0, 1);
+    controls = new OrbitControls(camera, renderer.domElement);
+    new ResizeObserver(resize).observe(box);
+    renderer.setAnimationLoop(() => { if (on) { controls.update(); renderer.render(scene, camera); } });
+  }
+  renderer.setClearColor(new THREE.Color(getComputedStyle(box).backgroundColor));
+  scene = new THREE.Scene();
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x556070, 1.15));
+  const sun = new THREE.DirectionalLight(0xffffff, 1.0); sun.position.set(-1, -2, 3); scene.add(sun);
+  const V = Number(document.getElementById("vscale3d").value), xray = document.getElementById("xray3d").checked;
+  const {x: [x0, x1], y: [y0, y1]} = site.extent, legend = [], note = document.getElementById("note3d");
+  const g = await profile();
+  const nsoil = site.soils.length;
+  let ground = (x, y) => 0;
+  if (g && !g.error) {
+    const at = sampler(g); ground = (x, y) => at(0, x, y);
+    note.textContent = g.approximate ? "soils interpolated approximately (open through python main.py for the exact surfaces)" : "";
+    const {xs, ys} = g, nx = xs.length, ny = ys.length, tops = g.tops;
+    const base = k => (k + 1 < nsoil ? tops[k + 1] : null);
+    // the ground: coloured by the soil at the surface
+    const pos = [], col = [];
+    const surfSoil = (j, i) => { for (let k = 0; k < nsoil; k++) { const b = base(k) ? base(k)[j][i] : g.bottom; if (tops[k][j][i] - b > 1e-6) return k; } return nsoil - 1; };
+    for (let j = 0; j + 1 < ny; j++) for (let i = 0; i + 1 < nx; i++) {
+      const quad = [[j, i], [j, i + 1], [j + 1, i + 1], [j, i], [j + 1, i + 1], [j + 1, i]];
+      for (const [jj, ii] of quad) { pos.push(xs[ii], ys[jj], tops[0][jj][ii] * V); const c = colourOf(surfSoil(jj, ii)); col.push(c.r, c.g, c.b); }
+    }
+    scene.add(mesh(pos, 0xffffff, {colors: col, opacity: xray ? 0.3 : undefined}));
+    // the sides of the model: a band per soil.  See-through, only the inside
+    // of the far sides is drawn (the near ones are culled): a cutaway
+    const edges = [[[...xs.keys()].map(i => [0, i]), [0, -1, 0]], [[...xs.keys()].map(i => [ny - 1, i]), [0, 1, 0]],
+                   [[...ys.keys()].map(j => [j, 0]), [-1, 0, 0]], [[...ys.keys()].map(j => [j, nx - 1]), [1, 0, 0]]];
+    const sideMode = xray ? THREE.BackSide : THREE.FrontSide;
+    for (const [run, dir] of edges) for (let k = 0; k < nsoil; k++) {
+      const p = [];
+      for (let a = 0; a + 1 < run.length; a++) {
+        const [j1, i1] = run[a], [j2, i2] = run[a + 1];
+        const t1 = tops[k][j1][i1], t2 = tops[k][j2][i2], b1 = base(k) ? base(k)[j1][i1] : g.bottom, b2 = base(k) ? base(k)[j2][i2] : g.bottom;
+        if (t1 - b1 < 1e-6 && t2 - b2 < 1e-6) continue;
+        p.push(xs[i1], ys[j1], b1 * V, xs[i2], ys[j2], b2 * V, xs[i2], ys[j2], t2 * V, xs[i1], ys[j1], b1 * V, xs[i2], ys[j2], t2 * V, xs[i1], ys[j1], t1 * V);
+      }
+      if (p.length) scene.add(mesh(outward(p, new THREE.Vector3(...dir)), colourOf(k), {side: sideMode}));
+    }
+    // the base
+    const {bottom} = g, bp = [xs[0], ys[0], bottom * V, xs[nx - 1], ys[0], bottom * V, xs[nx - 1], ys[ny - 1], bottom * V,
+                               xs[0], ys[0], bottom * V, xs[nx - 1], ys[ny - 1], bottom * V, xs[0], ys[ny - 1], bottom * V];
+    scene.add(mesh(outward(bp, new THREE.Vector3(0, 0, -1)), colourOf(nsoil - 1), {side: sideMode}));
+    site.soils.forEach((q, k) => legend.push(`<span class="sw" style="background:${PALETTE[k % PALETTE.length]}"></span>${q.name}`));
+  } else {
+    note.textContent = "place a borehole to see the soils";
+  }
+  // outline of the model box
+  const zb = site.bottom * V, bx = [];
+  for (const [a, b] of [[[x0, y0], [x1, y0]], [[x1, y0], [x1, y1]], [[x1, y1], [x0, y1]], [[x0, y1], [x0, y0]]]) bx.push(a[0], a[1], zb, b[0], b[1], zb);
+  for (const [x, y] of [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]) bx.push(x, y, zb, x, y, ground(x, y) * V);
+  scene.add(lines(bx, getComputedStyle(document.documentElement).getPropertyValue("--muted").trim() || "#888"));
+  // pits: from the lowest formation level to the ground, the lift levels as rings
+  for (const pit of site.excavations) {
+    const low = Math.min(...pit.levels);
+    scene.add(prism(pit.polygon, () => low, (x, y) => Math.max(ground(x, y), low), 0xdc2626, 0.28, V));
+    const ring = [];
+    for (const lv of pit.levels) for (let a = 0; a < pit.polygon.length; a++) { const [p1, p2] = [pit.polygon[a], pit.polygon[(a + 1) % pit.polygon.length]]; ring.push(p1[0], p1[1], lv * V, p2[0], p2[1], lv * V); }
+    scene.add(lines(ring, 0xdc2626));
+  }
+  if (site.excavations.length) legend.push('<span class="sw" style="background:#dc2626"></span>pits');
+  // fills: from the ground up to each lift
+  for (const f of site.fills) {
+    let lower = (x, y) => ground(x, y);
+    for (const lv of f.levels) { const lo = lower; scene.add(prism(f.polygon, lo, (x, y) => Math.max(lv, lo(x, y)), 0xa16207, 0.55, V)); lower = () => lv; }
+  }
+  if (site.fills.length) legend.push('<span class="sw" style="background:#a16207"></span>fills');
+  // walls: a panel per segment, from the toe to its top or the ground
+  for (const wl of site.walls) {
+    const p = [];
+    for (let a = 0; a + 1 < wl.path.length; a++) {
+      const [x1_, y1_] = wl.path[a], [x2_, y2_] = wl.path[a + 1];
+      const t1 = (wl.top ?? ground(x1_, y1_)) * V, t2 = (wl.top ?? ground(x2_, y2_)) * V, zt = wl.toe * V;
+      p.push(x1_, y1_, zt, x2_, y2_, zt, x2_, y2_, t2, x1_, y1_, zt, x2_, y2_, t2, x1_, y1_, t1);
+    }
+    scene.add(mesh(p, 0x374151));
+  }
+  if (site.walls.length) legend.push('<span class="sw" style="background:#374151"></span>walls');
+  // loads: a thin slab above the ground with arrows
+  for (const ld of site.loads) {
+    scene.add(prism(ld.area, (x, y) => ground(x, y) + 0.05, (x, y) => ground(x, y) + 0.3, 0x7c3aed, 0.5, V));
+    const c = ld.area.reduce((s, q) => [s[0] + q[0] / ld.area.length, s[1] + q[1] / ld.area.length], [0, 0]), zg = ground(c[0], c[1]);
+    const arrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, -1), new THREE.Vector3(c[0], c[1], (zg + 2.5) * V), 2.2 * V, 0x7c3aed, 0.6, 0.4);
+    scene.add(arrow);
+  }
+  if (site.loads.length) legend.push('<span class="sw" style="background:#7c3aed"></span>loads');
+  // anchors and piles
+  const an = [];
+  for (const a of site.anchors) an.push(a.a[0], a.a[1], a.a[2] * V, a.b[0], a.b[1], a.b[2] * V);
+  if (an.length) { scene.add(lines(an, 0x16a34a)); legend.push('<span class="sw" style="background:#16a34a"></span>anchors'); }
+  for (const pl of site.piles) {
+    const head = new THREE.Vector3(pl.head[0], pl.head[1], pl.head[2] * V), tip = new THREE.Vector3(pl.tip[0], pl.tip[1], pl.tip[2] * V);
+    const len = head.distanceTo(tip), cyl = new THREE.Mesh(new THREE.CylinderGeometry(pl.D / 2, pl.D / 2, len, 16), new THREE.MeshLambertMaterial({color: 0xdb2777}));
+    cyl.position.copy(head).add(tip).multiplyScalar(0.5); cyl.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tip.clone().sub(head).normalize()); scene.add(cyl);
+  }
+  if (site.piles.length) legend.push('<span class="sw" style="background:#db2777"></span>piles');
+  // boreholes: a thin column in the soils' colours
+  const names = site.soils.map(q => q.name);
+  for (const b of site.boreholes) for (let k = 0; k < b.tops.length; k++) {
+    const top = b.tops[k][1], bot = k + 1 < b.tops.length ? b.tops[k + 1][1] : site.bottom, idx = names.indexOf(b.tops[k][0]);
+    if (top <= bot) continue;
+    const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, (top - bot) * V, 10), new THREE.MeshLambertMaterial({color: colourOf(Math.max(idx, 0))}));
+    cyl.rotation.x = Math.PI / 2; cyl.position.set(b.x, b.y, (top + bot) / 2 * V); scene.add(cyl);
+  }
+  // water
+  if (site.water !== null && site.water !== undefined && site.water !== "") {
+    const wz = Number(site.water) * V;
+    scene.add(mesh([x0, y0, wz, x1, y0, wz, x1, y1, wz, x0, y0, wz, x1, y1, wz, x0, y1, wz], 0x3b82f6, {opacity: 0.25}));
+    legend.push('<span class="sw" style="background:#3b82f6"></span>water table');
+  }
+  document.getElementById("legend3d").innerHTML = legend.join(" ");
+  // frame the model the first time, and keep the user's view afterwards
+  if (!build.framed) {
+    const size = Math.max(x1 - x0, y1 - y0, (0 - site.bottom) * V), c = new THREE.Vector3((x0 + x1) / 2, (y0 + y1) / 2, site.bottom * V / 2);
+    camera.position.copy(c).add(new THREE.Vector3(-0.9 * size, -1.5 * size, 0.9 * size)); controls.target.copy(c); build.framed = true;
+  }
+  resize();
+}
+function resize() { if (!renderer) return; const w = box.clientWidth, h = box.clientHeight; renderer.setSize(w, h, false); camera.aspect = w / Math.max(h, 1); camera.updateProjectionMatrix(); }
+
+const btn = document.getElementById("toggle3d");
+btn.onclick = async () => {
+  on = !on; planDiv.classList.toggle("three", on); btn.classList.toggle("on", on); btn.textContent = on ? "Plan view" : "3D view";
+  if (on) await build();
+};
+document.getElementById("xray3d").onchange = build;
+document.getElementById("vscale3d").onchange = () => { build.framed = false; build(); };
+window.refresh3d = () => { if (on) build(); };
 </script>
 </body>
 </html>

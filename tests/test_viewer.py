@@ -66,8 +66,9 @@ def test_the_plan_editor_ships_with_the_package(tmp_path):
     out = tmp_path / "editor.html"
     assert main(["editor", "-o", str(out)]) == 0
     text = out.read_text()
-    for needle in ("function toJSON", "function parseDXF", "dewatered", "seepage"):
+    for needle in ("function toJSON", "function parseDXF", "dewatered", "seepage", "toggle3d"):
         assert needle in text
+    assert "data:text/javascript;base64," in text                  # three.js inlined for the 3D view
 
 
 def _chromium():
@@ -90,7 +91,7 @@ def test_in_a_browser_the_editor_draws_a_site_that_lythos_can_read(tmp_path):
 
     main(["editor", "-o", str(tmp_path / "editor.html")])
     with sync_playwright() as p:
-        browser = p.chromium.launch(executable_path=_chromium())
+        browser = p.chromium.launch(executable_path=_chromium(), args=["--use-gl=swiftshader", "--ignore-gpu-blocklist"])
         page = browser.new_page(viewport={"width": 1300, "height": 800}, accept_downloads=True)
         errors = []
         page.on("pageerror", lambda e: errors.append(str(e)))
@@ -110,11 +111,17 @@ def test_in_a_browser_the_editor_draws_a_site_that_lythos_can_read(tmp_path):
         page.click("button[data-tool=wall]")
         for q in [(10, 10), (20, 10), (20, 18), (10, 18), (10, 10)]:
             click(*q)
+        # the 3D view of what has been drawn, with three.js inlined in the file
+        page.click("#toggle3d")
+        page.wait_for_timeout(1500)
+        legend = page.inner_text("#legend3d")
+        page.click("#toggle3d")
         with page.expect_download() as download:
             page.click("#save")
         site = site_from_dict(json.load(open(download.value.path())))
         browser.close()
     assert not errors
+    assert "clay" in legend and "pits" in legend and "walls" in legend
     assert [tuple(p) for p in site.excavations[0].polygon] == [(10, 10), (20, 10), (20, 18), (10, 18)]
     assert len(site.walls[0].path) == 5 and site.profile.boreholes[0].x == 2.0
     assert [s.name for s in site.stages][-1] == "factor of safety"
@@ -139,3 +146,17 @@ def test_in_a_browser_the_report_draws_without_errors(analysed, tmp_path):
         browser.close()
     assert not errors
     assert "displacement" in legend
+
+
+def test_the_3d_view_gets_the_soil_surfaces_meshing_uses():
+    from lythos3d.examples import walled_pit
+    from lythos3d.gui import profile_grid
+    from lythos3d.io.site_json import site_to_dict
+
+    site = walled_pit()
+    g = profile_grid(site_to_dict(site))
+    xs, ys, tops = np.array(g["xs"]), np.array(g["ys"]), np.array(g["tops"])
+    assert tops.shape == (site.profile.n_soils, len(ys), len(xs))
+    X, Y = np.meshgrid(xs, ys)
+    exact = site.profile.tops(np.column_stack([X.ravel(), Y.ravel()]))
+    assert np.allclose(tops.reshape(site.profile.n_soils, -1).T, exact)

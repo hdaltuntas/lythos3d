@@ -196,10 +196,17 @@ def _gui(args) -> int:
 
 
 def _editor(args) -> int:
-    import shutil
+    from .io.viewer import _importmap
 
     source = os.path.join(os.path.dirname(__file__), "io", "editor.html")
-    shutil.copyfile(source, args.out)
+    with open(source, encoding="utf-8") as fh:
+        page = fh.read()
+    # as a file there is no server to fetch three.js from: inline it for the 3D view
+    served = '{"imports": {"three": "./vendor/three.module.min.js", ' \
+             '"three/addons/controls/OrbitControls.js": "./vendor/OrbitControls.js"}}'
+    page = page.replace(served, _importmap(offline=True))
+    with open(args.out, "w", encoding="utf-8") as fh:
+        fh.write(page)
     print(f"written {args.out}: open it in a browser, draw the site, and save site.json for lythos3d run")
     return 0
 
