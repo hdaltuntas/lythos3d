@@ -121,15 +121,13 @@ class Solver:
         self.ssr_budget_factor = 8
         self.ssr_min_budget = 200
         #: load steps a strength reduction trial takes from the last one, and
-        #: whether it starts on the last trial's factorisation (the structure
-        #: is the same, and modified Newton refactorises when it stops
-        #: helping).  Against 6 steps and a fresh factorisation, the example
-        #: pit's search took 289 s instead of 405 s, and gave 1.177, the
-        #: value it converges to at a tighter tolerance, rather than 1.191;
-        #: the benchmark slope is 1.430 either way.  Cutting the iteration
-        #: budget instead moved the pit to 1.198, so the budget stays.
+        #: whether it starts on the last factorisation rather than a fresh
+        #: one.  Starting on an old factorisation is a trap: with
+        #: non-associated flow the first iterations then wander, and on the
+        #: walled pit example the trial at 1.10 went to 28.8 mm in 95
+        #: iterations (450 s) instead of 0.6 mm in 7 (21 s).
         self.ssr_increments = 3
-        self.ssr_keep_factorisation = True
+        self.ssr_keep_factorisation = False
         #: the factor of safety is bracketed to within this
         self.ssr_bracket = 0.01
         #: smallest step, as a fraction of the first, before a trial gives up
