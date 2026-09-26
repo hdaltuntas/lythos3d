@@ -87,6 +87,14 @@ class Solver:
         self.reuse_rate = 0.3
         self.verbose = verbose
         self.materials = dict(problem.materials)
+        #: Strength reduction needs a tighter tolerance than construction
+        #: stages.  Near collapse, an out-of-balance force of a few tenths of a
+        #: percent is enough to hold a mechanism that has no true equilibrium:
+        #: at 2e-3 the benchmark slope's factor of safety came out 1.438 by
+        #: full Newton and 1.459 by modified Newton, depending only on which
+        #: found such a pseudo-equilibrium.  From 5e-4 down both give 1.430
+        #: (2D Lythos: 1.430), and 2e-4 changes nothing.
+        self.ssr_tolerance = 5e-4
         #: a strength reduction trial that has taken this many times the
         #: iterations of the hardest successful one is taken to have failed
         self.ssr_budget_factor = 8
@@ -274,13 +282,8 @@ class Solver:
         # a new stage has new restraints and elements; never start it on the
         # factorisation of the last one
         self.linear.forget()
-        # Strength reduction trials run full Newton.  Near collapse a trial's
-        # verdict depends on how the iterations are spent, and modified
-        # Newton - more iterations, each cheaper - converges trials that full
-        # Newton gives up on: it moved the benchmark slope from 1.438 to 1.459
-        # with no change in the physics.  The factor of safety is kept on the
-        # path it was verified on.
-        modified = self.modified_newton and stage.kind != SSR
+        modified = self.modified_newton
+        tol = min(self.tol, self.ssr_tolerance) if stage.kind == SSR else self.tol
 
         # Adaptive stepping: an increment that will not converge is retried at
         # half the size, and once a size has failed the step never grows back
@@ -309,7 +312,7 @@ class Solver:
                 r[fixed] = 0.0
                 rn = float(np.linalg.norm(r))
                 logs.append(IterationLog(len(logs), it, rn / scale))
-                if rn / scale < self.tol:
+                if rn / scale < tol:
                     ok = True
                     break
                 # Contact points near their limit can switch between sticking
