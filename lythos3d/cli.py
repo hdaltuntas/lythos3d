@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Command line: ``lythos3d demo`` and ``lythos3d info``."""
+"""Lythos 3D from the command line: examples, meshing, analysis, the plan editor and DXF plans."""
 
 from __future__ import annotations
 
@@ -220,7 +220,7 @@ def _dxf(args) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="lythos3d", description=__doc__)
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     p = sub.add_parser("info", help="versions and the linear solvers available")
     p.set_defaults(func=_info)
@@ -274,7 +274,31 @@ def main(argv=None) -> int:
     p.set_defaults(func=_run)
 
     args = parser.parse_args(argv)
+    if args.command is None:
+        return _welcome(parser)
     return args.func(args)
+
+
+def _welcome(parser) -> int:
+    """No command given - as when main.py is run from an IDE: say what there is to do."""
+    from . import __version__
+
+    print(f"Lythos 3D {__version__}: 3D finite element analysis for geotechnical engineering\n")
+    print("Give a command, for example:\n")
+    examples = [
+        ("info", "versions, and which linear solvers are available"),
+        ("demo -o out", "a footing on layered ground, written for ParaView (a minute or two)"),
+        ("site-example -o site.json", "an example site: boreholes, a walled and strutted pit"),
+        ("run site.json -o run", "analyse a site stage by stage; open run/report.html in a browser"),
+        ("editor -o editor.html", "a plan editor to draw your own site in the browser"),
+        ("pit --trench -o trench", "a pit section in plane strain, dug and its factor of safety (a minute)"),
+    ]
+    for cmd, what in examples:
+        print(f"  lythos3d {cmd:28s} {what}")
+    print("\nFrom a clone, `python main.py <command>` does the same.  In PyCharm, put the command")
+    print("(for example `info`, or `run site.json -o run`) in Run > Edit Configurations > Parameters.\n")
+    parser.print_help()
+    return 0
 
 
 if __name__ == "__main__":
