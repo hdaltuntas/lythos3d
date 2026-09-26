@@ -81,3 +81,28 @@ def walled_pit(mesh_size: float = 2.5):
     site.walls, site.anchors = [wall], [strut]
     site.stages = site.default_stages()
     return site
+
+
+def dewatered_pit(mesh_size: float = 2.5):
+    """The walled pit of :func:`walled_pit` below the water table, pumped dry as it is dug.
+
+    The water stands 1.5 m below the original ground at BH1 (level -1.5).
+    Inside the wall it is drawn down to each formation level as it is
+    reached; outside it stays where it was, so the wall carries the
+    difference.  The wall is modelled with interfaces, which carry the
+    water pressure across to it on both sides.
+    """
+    from dataclasses import replace
+
+    from .core.interfaces import InterfaceSpec
+    from .core.water import WaterTable
+
+    site = walled_pit(mesh_size)
+    for soil, gamma_sat in zip(site.profile.soils, (20.0, 20.0, 21.0)):
+        soil.material = replace(soil.material, gamma_sat=gamma_sat)
+    site.name = "dewatered walled pit on sloping ground"
+    site.walls[0].interface = InterfaceSpec(R=0.67)
+    site.excavations[0].dewatered = True
+    site.water = WaterTable(level=-1.5)
+    site.stages = site.default_stages()
+    return site

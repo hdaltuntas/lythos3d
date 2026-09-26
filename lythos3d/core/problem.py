@@ -15,9 +15,10 @@ import numpy as np
 
 from .analysis import SurfaceLoad, box_fixities
 from .assembly import CombinedPattern, SparsityPattern, assemble_vector
-from .elements import ContinuumElements, face_traction
+from .elements import TET10_FACES, ContinuumElements, face_traction, tri6_shape
 from .mesh import Mesh
-from .structures import Bar, Plate, PlateElements
+from .structures import TRI6_GAUSS_BARY, TRI6_GAUSS_WEIGHT, Bar, Plate, PlateElements
+from .water import WaterTable
 
 INITIAL = "initial"
 PLASTIC = "plastic"
@@ -38,6 +39,9 @@ class Stage:
     ``kind`` is ``"initial"`` for the initial stresses (by ``initial_stress``:
     ``"k0"`` or ``"gravity"``), ``"plastic"`` for an ordinary construction
     step, and ``"ssr"`` for a factor of safety by strength reduction.
+
+    ``water`` is the :class:`~lythos3d.core.water.WaterTable` from this stage
+    on; ``None`` keeps the last one (the problem's own at the start).
     """
 
     name: str
@@ -51,6 +55,7 @@ class Stage:
     initial_stress: str = "k0"
     srf_min: float = 0.8
     srf_max: float = 3.0
+    water: WaterTable | None = None
 
     def __post_init__(self):
         if self.kind not in (INITIAL, PLASTIC, SSR):
@@ -77,6 +82,11 @@ class Problem:
 
     ``plates``, ``bars`` and ``piles`` (embedded) are the structures; they
     do nothing until a stage installs them.
+
+    ``water`` is the water table at the start (dry ground without one);
+    stages may change it.  With water, ``vertical_stress`` is called as
+    ``vertical_stress(points, level)`` with the water level above each
+    point, and returns the total overburden pressure.
     """
 
     mesh: Mesh
@@ -88,8 +98,11 @@ class Problem:
     plates: list[Plate] = field(default_factory=list)
     bars: list[Bar] = field(default_factory=list)
     piles: list = field(default_factory=list)
+    water: WaterTable | None = None
 
     def __post_init__(self):
+        if self.water is None:
+            self.water = WaterTable.dry()
         if isinstance(self.materials, (list, tuple)):
             self.materials = dict(enumerate(self.materials))
         missing = set(np.unique(self.mesh.region).tolist()) - set(self.materials)
@@ -426,13 +439,89 @@ class Problem:
                 raise ValueError(f"stage {stage.name!r} installs unknown structure {name!r}")
 
     # ------------------------------------------------------------------ loads
-    def gravity(self, active: np.ndarray) -> np.ndarray:
-        """Nodal self weight of the active elements."""
-        gamma = np.zeros(self.mesh.n_elements)
-        for r, mat in self.materials.items():
-            gamma[self.mesh.region == r] = mat.gamma
+    def gravity(self, active: np.ndarray, water: WaterTable | None = None) -> np.ndarray:
+        """Nodal self weight of the active elements, saturated below the water table."""
+        ce = self.continuum
+        gamma = np.zeros(self.n_points)
+        points = ce.gauss_xyz.reshape(-1, 3)
+        wet = (points[:, 2] < water.head(points)) if water is not None and not water.is_dry \
+            else np.zeros(self.n_points, bool)
+        for mat, gp in self.material_groups():
+            gamma[gp] = np.where(wet[gp], mat.saturated_weight, mat.gamma)
+        gamma = gamma.reshape(ce.n_elements, ce.n_gauss)
         gamma[~active] = 0.0
-        return assemble_vector(self.n_dof, self.dofs, self.continuum.body_force(gamma))
+        f = np.zeros((ce.n_elements, 30))
+        f[:, 2::3] = -(gamma * ce.detJw) @ ce.N
+        return assemble_vector(self.n_dof, self.dofs, f)
+
+    # ----------------------------------------------------------------- water
+    def pore_pressure(self, water: WaterTable | None, active: np.ndarray) -> np.ndarray:
+        """Pore pressure at the Gauss points (compression positive), zero outside the active ground."""
+        if water is None or water.is_dry:
+            return np.zeros(self.n_points)
+        p = water.pressure(self.continuum.gauss_xyz.reshape(-1, 3))
+        p[~np.repeat(active, self.continuum.n_gauss)] = 0.0
+        return p
+
+    def free_faces(self, active: np.ndarray):
+        """Faces of the active elements that no other active element shares: ``(faces (n, 6), owner (n,))``."""
+        el = np.nonzero(active)[0]
+        faces = self.mesh.elements[el][:, np.array(TET10_FACES)].reshape(-1, 6)
+        owner = np.repeat(el, 4)
+        key = np.sort(faces[:, :3], axis=1)
+        _, inverse, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+        free = counts[inverse.ravel()] == 1
+        return faces[free], owner[free]
+
+    def _water_on_faces(self, water: WaterTable, faces: np.ndarray, owner: np.ndarray) -> np.ndarray:
+        """Nodal forces (n, 18) of the water pressing on faces of the elements ``owner``.
+
+        The pressure is taken just inside the owning element, so that a face
+        on the edge of a drawdown feels the water on its own side.
+        """
+        x = self.mesh.nodes
+        xyz = x[faces[:, :3]]
+        normal = np.cross(xyz[:, 1] - xyz[:, 0], xyz[:, 2] - xyz[:, 0])
+        area = 0.5 * np.linalg.norm(normal, axis=1)
+        normal /= (2.0 * area)[:, None]
+        centre = x[self.mesh.elements[owner, :4]].mean(axis=1)
+        outward = np.sign(np.einsum("ij,ij->i", xyz.mean(axis=1) - centre, normal))
+        normal *= outward[:, None]
+        f = np.zeros((len(faces), 6, 3))
+        for L, w in zip(TRI6_GAUSS_BARY, TRI6_GAUSS_WEIGHT):
+            N = tri6_shape(L)
+            point = np.einsum("a,faj->fj", N, x[faces])
+            point += 1e-6 * (centre - point)
+            p = water.pressure(point)
+            f -= (w * area * p)[:, None, None] * N[None, :, None] * normal[:, None, :]
+        return f.reshape(len(faces), 18)
+
+    def water_loads(self, water: WaterTable | None, active: np.ndarray) -> np.ndarray:
+        """What the pore water does to the skeleton: ``int B^T m p dV`` less the water on free faces.
+
+        A wall with an interface stands between two free faces of the soil;
+        the water pressing on those faces is carried across to the wall.
+        """
+        f = np.zeros(self.n_dof)
+        if water is None or water.is_dry:
+            return f
+        ce = self.continuum
+        p = self.pore_pressure(water, active).reshape(ce.n_elements, ce.n_gauss)
+        # m^T B: the divergence row of B, the sum of its three normal-strain rows
+        div = ce.B[:, :, 0] + ce.B[:, :, 1] + ce.B[:, :, 2]            # (ne, ng, 30)
+        fe = np.einsum("egi,eg->ei", div, p * ce.detJw)
+        f += assemble_vector(self.n_dof, self.dofs, fe)
+        faces, owner = self.free_faces(active)
+        fdofs = (3 * faces[:, :, None] + np.arange(3)).reshape(len(faces), 18)
+        f += assemble_vector(self.n_dof, fdofs, self._water_on_faces(water, faces, owner))
+        ie = self.interface_elements
+        if ie is not None:
+            live = active[self.interface_support]
+            if live.any():
+                on_soil = self._water_on_faces(water, ie.soil_faces[live], self.interface_support[live])
+                wdofs = (3 * ie.wall_faces[live][:, :, None] + np.arange(3)).reshape(-1, 18)
+                f -= assemble_vector(self.n_dof, wdofs, on_soil)
+        return f
 
     def surface_loads(self, loads) -> np.ndarray:
         from .beams import PileLoad
@@ -455,13 +544,20 @@ class Problem:
         return f
 
     # ----------------------------------------------------------- initial state
-    def k0_stress(self, active: np.ndarray) -> np.ndarray:
-        """Geostatic stress at the Gauss points: ``sv`` from the overburden, ``sh = K0 sv``."""
+    def k0_stress(self, active: np.ndarray, water: WaterTable | None = None) -> np.ndarray:
+        """Geostatic effective stress at the Gauss points: ``sv'`` from the overburden, ``sh' = K0 sv'``.
+
+        ``sv'`` is the total overburden less the pore pressure.
+        """
         if self.vertical_stress is None:
             raise ValueError("the K0 procedure needs the overburden (a stratum profile); "
                              "use initial_stress='gravity' for this problem")
         points = self.continuum.gauss_xyz.reshape(-1, 3)
-        sv = np.asarray(self.vertical_stress(points), dtype=float)
+        if water is None or water.is_dry:
+            sv = np.asarray(self.vertical_stress(points), dtype=float)
+        else:
+            sv = np.asarray(self.vertical_stress(points, water.head(points)), dtype=float)
+            sv = sv - water.pressure(points)
         k0 = np.zeros(self.n_points)
         for mat, gp in self.material_groups():
             k0[gp] = mat.k0

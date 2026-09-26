@@ -116,7 +116,8 @@ def write_stage(path: str | os.PathLike, problem, result) -> str:
     Only the elements present at that stage are written, so excavated ground
     is simply absent.  ``plastic_strain`` (equivalent plastic strain, mean per
     element) is what shows a failure mechanism: after a strength reduction it
-    traces the slip surface.
+    traces the slip surface.  ``stress`` is effective; with groundwater
+    ``pore_pressure`` and ``total_stress`` are written as well.
     """
     mesh = problem.mesh
     ce = problem.continuum
@@ -134,12 +135,18 @@ def write_stage(path: str | os.PathLike, problem, result) -> str:
     def per_element(values):
         return values.reshape(mesh.n_elements, ngp).mean(axis=1)[active]
 
+    point_data = {"displacement": result.displacement, "stress": nodal_stress}
+    pore = getattr(result, "pore_pressure", None)
+    if pore is not None and np.any(pore):
+        # the soil's stress is effective; total stress is sigma' - p m
+        nodal_p = ce.nodal_average(np.where(np.repeat(active, ngp), pore, 0.0)[:, None], mesh.n_nodes)[:, 0]
+        nodal_p *= total / np.maximum(count, 1.0)
+        point_data["pore_pressure"] = nodal_p
+        point_data["total_stress"] = nodal_stress - nodal_p[:, None] * np.array([1, 1, 1, 0, 0, 0], float)
+
     return write_vtu(
         path, mesh.nodes, mesh.elements[active],
-        point_data={
-            "displacement": result.displacement,
-            "stress": nodal_stress,
-        },
+        point_data=point_data,
         cell_data={
             "region": mesh.region[active],
             "plastic_strain": per_element(result.state.eps_p_eq),

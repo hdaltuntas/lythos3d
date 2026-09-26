@@ -61,6 +61,9 @@ class StageResult:
     #: towards its tip) at ``s_skin``, and the tip force ``base`` (kN,
     #: compression positive)
     pile_forces: dict = field(default_factory=dict)
+    #: pore pressure at the Gauss points, kPa, compression positive; the
+    #: soil's ``state.stress`` is effective, total stress is ``stress - p m``
+    pore_pressure: np.ndarray | None = None
 
     @property
     def max_displacement(self) -> float:
@@ -111,6 +114,8 @@ class Solver:
         #: held fixed while an increment converges on them
         self._contact_modes = None
         self._contact_frozen = None
+        #: the water table in force
+        self._water = problem.water
         self._active = np.ones(problem.mesh.n_elements, bool)
         for name in problem.absent:
             self._active &= ~problem.groups[name]
@@ -142,6 +147,8 @@ class Solver:
         for name in stage.construct:
             self._active |= self.p.groups[name]
         active = self._active.copy()
+        if stage.water is not None:
+            self._water = stage.water
         plate_index = {pl.name: i for i, pl in enumerate(self.p.plates)}
         bar_index = {b.name: i for i, b in enumerate(self.p.bars)}
         pile_index = {pl.name: i for i, pl in enumerate(self.p.piles)}
@@ -169,6 +176,7 @@ class Solver:
         result.plate_forces, result.bar_forces = self._structure_forces(self._u)
         result.interface_tractions = self._interface_tractions(active)
         result.pile_forces = self._pile_forces()
+        result.pore_pressure = self.p.pore_pressure(self._water, active)
         result.seconds = time.perf_counter() - t0
         gp_active = np.repeat(active, self.p.continuum.n_gauss)
         result.plastic_fraction = float(np.mean(result.state.yielding[gp_active])) if active.any() else 0.0
@@ -187,7 +195,7 @@ class Solver:
         self._u[:] = 0.0
         self._state = self._fresh_state()
         if stage.initial_stress == "k0":
-            self._state.stress[:] = self.p.k0_stress(active)
+            self._state.stress[:] = self.p.k0_stress(active, self._water)
             # a K0 field is in equilibrium only under level ground and level
             # strata; let the solver remove whatever imbalance is left
             increments = max(1, stage.increments // 2)
@@ -276,7 +284,8 @@ class Solver:
                 budget: int | None = None) -> StageResult:
         p = self.p
         fixed = np.union1d(p.fixed, self._orphan_dofs(active))
-        f_ext = p.gravity(active) + p.surface_loads(stage.loads) + self._structure_loads()
+        f_ext = (p.gravity(active, self._water) + p.water_loads(self._water, active)
+                 + p.surface_loads(stage.loads) + self._structure_loads())
         logs: list[IterationLog] = []
 
         u_committed = self._u.copy()

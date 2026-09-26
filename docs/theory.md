@@ -467,3 +467,81 @@ excavated switches off with it.
 
 **Strength reduction** leaves a pile's capacities as they are. They are
 the engineer's numbers for the pile, not soil strengths.
+
+## Groundwater
+
+The analysis is drained and in effective stress, as in 2D Lythos. The soil
+skeleton carries `σ'`, the water carries the pore pressure `p` (compression
+positive), and the total stress is `σ = σ' − p m`, with `m = [1, 1, 1, 0,
+0, 0]`. The Mohr-Coulomb criterion, K0 and the interfaces all see `σ'`.
+
+**Pore pressure** is hydrostatic below a phreatic surface and zero above it
+(no suction): `p = γw max(h(x, y) − z, 0)`, with `γw = 9.81` kN/m³ by
+default. The level `h` is constant, or interpolated between water levels
+read in boreholes (linearly, and flat beyond them, as the soil tops are).
+A *drawdown* lowers it inside a polygon, such as a pit pumped dry. There is
+no seepage analysis. A level that varies from place to place is taken as
+given, and the horizontal gradient it implies acts on the skeleton as a
+seepage force. Each stage may set a new water table. A dewatered excavation
+in the default stages is drawn down to each formation level as it is dug.
+
+**Loads on the skeleton.** Total equilibrium is `∫Bᵀσ dV = f`. The load
+`f` includes the saturated unit weight below the water and the water
+standing on free surfaces. Written for `σ'`, it becomes
+
+```
+∫ Bᵀσ' dV = f + ∫ Bᵀ m p dV − ∫_free Nᵀ p n dA
+```
+
+The volume term is integrated element by element at the Gauss points. The
+surface term covers every face of the active ground that no other active
+element shares. There the water stands on the ground: a flooded pit, a
+lake, or the model's box faces, where it goes into the reactions. The
+pressure on a face is read just inside the element that owns it.
+
+Below a level water table the two terms reduce to the buoyant weight
+`γsat − γw`. The more useful property is what happens where the pressure
+changes abruptly between neighbouring elements, as across a wall dewatered
+on one side:
+
+- *Wall sharing its nodes with the soil:* the element terms no longer cancel
+  on the face between the elements. The difference lands on the shared
+  nodes, and so on the wall: the net water thrust with nothing more to do.
+- *Wall with interfaces:* the soil either side has its own nodes, and the
+  faces against the wall are free faces. The water there presses on the
+  soil and is cancelled by its own volume term. The same pressure is then
+  put on the wall's nodes, from both sides.
+
+The interfaces therefore carry only the effective contact traction, and
+their friction is `c + σn' tan φ`. A test checks the wall's share against
+`½ γw (h₁² − h₂²)` per metre, to 1e-6.
+
+A drawdown that ends in open ground makes the same jump, but there nothing
+real stands in the way: the pressure difference acts on the soil along the
+drawdown's edge, as it does with a dry cluster in 2D. The same holds below
+the toe of a wall round a dewatered pit. Real water flows under the toe
+and the pressure is continuous there. A hydrostatic analysis cannot know
+this, and a seepage analysis is on the roadmap. Until then, draw a drawdown
+along walls, and treat heave below a deep pit's toe with caution.
+
+**K0.** The profile gives the total overburden with `γ` above the water,
+`γsat` below it and the water standing on the ground. The pore pressure is
+subtracted from it: `σv' = σv − p`, and `σh' = K0 σv'`. Under a level water
+table this is in equilibrium with the loads above to round-off, so the
+initial stage moves nothing. This is tested with the water in the ground,
+at the surface and standing above it.
+
+**Strength reduction** leaves the water as it is. Only `c` and `tan φ` are
+reduced, acting on the effective stress.
+
+**Checked against 2D Lythos and limit equilibrium.** The 2:1 benchmark
+slope was analysed with a phreatic line rising from the toe (0) to 6 m under
+the crest (`γsat` = 21). It uses the same slices as the dry case:
+
+| | dry | with water |
+| --- | --- | --- |
+| Bishop, circles above the rigid base | 1.379 | 1.187 |
+| 2D Lythos, 0.75 m elements | 1.360 | 1.163 |
+| 2D Lythos, 1.25 m | 1.374 | 1.184 |
+| 2D Lythos, 2.5 m | 1.430 | 1.241 |
+| 3D slice, 2.5 m | 1.430 | 1.269 |

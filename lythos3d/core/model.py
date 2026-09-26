@@ -16,6 +16,7 @@ import numpy as np
 
 from .mesh import box_mesh, graded
 from .problem import Problem, Stage
+from .water import GAMMA_WATER, WaterTable, layered_overburden
 
 
 @dataclass
@@ -97,6 +98,8 @@ class Model:
     walls: list[Wall] = field(default_factory=list)
     anchors: list[Anchor] = field(default_factory=list)
     piles: list = field(default_factory=list)
+    #: the water table at the start; stages may change it
+    water: WaterTable | None = None
 
     def __post_init__(self):
         if not self.strata:
@@ -114,15 +117,16 @@ class Model:
     def surface(self) -> float:
         return self.strata[0].top
 
-    def overburden(self, points: np.ndarray) -> np.ndarray:
-        """Vertical stress (compression positive) from the weight of the strata above."""
-        z = points[:, 2]
-        sv = np.zeros(len(points))
+    def overburden(self, points: np.ndarray, water_level: np.ndarray | None = None) -> np.ndarray:
+        """Total vertical stress (compression positive) from the strata above, saturated below the water."""
+        n = len(points)
         bounds = [s.top for s in self.strata] + [self.bottom]
-        for stratum, top, base in zip(self.strata, bounds[:-1], bounds[1:]):
-            thickness = np.clip(top - np.maximum(z, base), 0.0, top - base)
-            sv += stratum.material.gamma * thickness
-        return sv
+        tops = np.tile(bounds[:-1], (n, 1))
+        bases = np.tile(bounds[1:], (n, 1))
+        gamma = np.array([s.material.gamma for s in self.strata])
+        gamma_sat = np.array([s.material.saturated_weight for s in self.strata])
+        gamma_w = self.water.gamma_w if self.water is not None else GAMMA_WATER
+        return layered_overburden(points[:, 2], tops, bases, gamma, gamma_sat, water_level, gamma_w)
 
     def stratum_of(self, points: np.ndarray) -> np.ndarray:
         """Index of the stratum containing each point."""
@@ -171,7 +175,7 @@ class Model:
                 bars.append(Bar(a.name, na, nb, a.EA, a.prestress))
         return Problem(mesh, {i: s.material for i, s in enumerate(self.strata)},
                        groups=groups, vertical_stress=self.overburden, plates=plates, bars=bars,
-                       piles=list(self.piles))
+                       piles=list(self.piles), water=self.water)
 
     def run(self, verbose: bool = False, backend: str = "auto", tolerance: float = 1e-3):
         """Build, then analyse every stage: ``(problem, list of StageResult)``."""
@@ -205,6 +209,9 @@ class Site:
     walls: list = field(default_factory=list)
     anchors: list = field(default_factory=list)
     piles: list = field(default_factory=list)
+    #: the water table at the start; a dewatered excavation draws it down
+    #: to each formation level as it is dug
+    water: WaterTable | None = None
 
     def __post_init__(self):
         names = [n for e in self.excavations for n in e.lift_names]
@@ -221,9 +228,13 @@ class Site:
             stages.append(Stage("install walls and piles" if self.walls and self.piles
                                 else "install walls" if self.walls else "install piles", install=built))
         pending = list(self.anchors)
+        water = self.water
         for exc in self.excavations:
             for name, level in zip(exc.lift_names, exc.levels):
-                stages.append(Stage(f"{exc.name}: dig to {level:g}", excavate=(name,)))
+                lowered = None
+                if exc.dewatered and water is not None and not water.is_dry:
+                    water = lowered = water.lowered(exc.polygon, level)
+                stages.append(Stage(f"{exc.name}: dig to {level:g}", excavate=(name,), water=lowered))
                 ready = [a for a in pending if a.a[2] >= level]
                 if ready:
                     stages.append(Stage(f"stress {', '.join(a.name for a in ready)}",
@@ -264,8 +275,13 @@ class Site:
             else:
                 bars.append(Bar(a.name, head, next(ends), a.EA, a.prestress))
         materials = {i: s.material for i, s in enumerate(self.profile.soils)}
-        return Problem(mesh, materials, groups=groups, vertical_stress=self.profile.overburden,
-                       plates=plates, bars=bars, piles=list(self.piles))
+        gamma_w = self.water.gamma_w if self.water is not None else GAMMA_WATER
+
+        def overburden(points, water_level=None):
+            return self.profile.overburden(points, water_level, gamma_w)
+
+        return Problem(mesh, materials, groups=groups, vertical_stress=overburden,
+                       plates=plates, bars=bars, piles=list(self.piles), water=self.water)
 
     def run(self, verbose: bool = False, backend: str = "auto", tolerance: float = 1e-3):
         """Mesh, then analyse every stage: ``(problem, list of StageResult)``."""

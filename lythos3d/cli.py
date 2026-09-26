@@ -91,10 +91,10 @@ def _pit(args) -> int:
 
 
 def _site_example(args) -> int:
-    from .examples import walled_pit
+    from .examples import dewatered_pit, walled_pit
     from .io.site_json import save_site
 
-    print(f"written {save_site(walled_pit(), args.out)}")
+    print(f"written {save_site(dewatered_pit() if args.water else walled_pit(), args.out)}")
     return 0
 
 
@@ -152,6 +152,8 @@ def _run(args) -> int:
                                                                              v["resultants"][:, 5]).max()), 1),
                                       "base_kN": round(v["base"], 1)} for k, v in r.pile_forces.items()},
                         "max_displacement_mm": round(1000 * r.max_displacement, 2),
+                        "max_pore_pressure_kPa": round(float(r.pore_pressure.max()), 1)
+                        if r.pore_pressure is not None and len(r.pore_pressure) else 0.0,
                         "plastic_fraction": round(r.plastic_fraction, 4),
                         "factor_of_safety": r.srf, "message": r.message, "file": path})
         line = f"  {stage.name}: {'ok' if r.converged else 'FAILED'}"
@@ -203,6 +205,8 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("site-example", help="write an example site: boreholes, a walled and strutted pit")
     p.add_argument("-o", "--out", default="site.json")
+    p.add_argument("--water", action="store_true",
+                   help="below the water table, with the pit pumped dry as it is dug")
     p.set_defaults(func=_site_example)
 
     p = sub.add_parser("mesh", help="mesh a site description and report on the mesh")

@@ -17,6 +17,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from .water import GAMMA_WATER, layered_overburden
+
 
 @dataclass
 class Soil:
@@ -167,14 +169,18 @@ class SoilProfile:
         k = (points[:, 2][:, None] <= tops).sum(axis=1) - 1
         return np.clip(k, 0, self.n_soils - 1)
 
-    def overburden(self, points: np.ndarray) -> np.ndarray:
-        """Vertical stress (compression positive) from the weight of the soil above each point."""
+    def overburden(self, points: np.ndarray, water_level: np.ndarray | None = None,
+                   gamma_w: float = GAMMA_WATER) -> np.ndarray:
+        """Total vertical stress (compression positive) from the soil above each point.
+
+        Below ``water_level`` (the phreatic level above each point) the soil
+        weighs its saturated weight, and water above the ground adds its own.
+        """
         tops = self.tops(points)
         bases = np.column_stack([tops[:, 1:], np.full(len(points), self.bottom)])
-        z = points[:, 2][:, None]
-        thickness = np.clip(tops - np.maximum(z, bases), 0.0, None)
         gamma = np.array([s.material.gamma for s in self.soils])
-        return thickness @ gamma
+        gamma_sat = np.array([s.material.saturated_weight for s in self.soils])
+        return layered_overburden(points[:, 2], tops, bases, gamma, gamma_sat, water_level, gamma_w)
 
 
 @dataclass
@@ -184,13 +190,15 @@ class Excavation:
     ``levels`` are the formation levels reached at each lift, falling; lift
     ``k`` removes the ground inside ``polygon`` between level ``k - 1`` (the
     ground surface for the first) and level ``k``.  Its element groups are
-    named ``"<name> 1"``, ``"<name> 2"``...
+    named ``"<name> 1"``, ``"<name> 2"``...  A ``dewatered`` pit is pumped
+    down to each formation level as it is reached (in the default stages).
     """
 
     name: str
     polygon: list[tuple[float, float]]
     levels: list[float]
     mesh_size: float | None = None
+    dewatered: bool = False
 
     def __post_init__(self):
         if len(self.polygon) < 3:

@@ -145,7 +145,8 @@ class LinearElastic:
 
     ``K0`` is the ratio of horizontal to vertical stress the K0 procedure
     uses; by default it is the elastic value under zero lateral strain,
-    ``nu / (1 - nu)``.
+    ``nu / (1 - nu)``.  ``gamma_sat`` is the unit weight below the water
+    table (by default ``gamma``).
     """
 
     name: str
@@ -153,12 +154,20 @@ class LinearElastic:
     nu: float
     gamma: float = 0.0
     K0: float | None = None
+    gamma_sat: float | None = None
 
     def __post_init__(self):
         if self.E <= 0:
             raise ValueError(f"{self.name}: E must be positive")
         if not -1.0 < self.nu < 0.5:
             raise ValueError(f"{self.name}: nu must lie in (-1, 0.5)")
+        if self.gamma_sat is not None and self.gamma_sat < 0:
+            raise ValueError(f"{self.name}: gamma_sat may not be negative")
+
+    @property
+    def saturated_weight(self) -> float:
+        """Unit weight below the water table."""
+        return self.gamma if self.gamma_sat is None else self.gamma_sat
 
     def elastic(self) -> np.ndarray:
         return elastic_matrix(self.E, self.nu)

@@ -16,8 +16,9 @@
   ],
   "excavations": [
     {"name": "pit", "polygon": [[4, 4], [12, 4], [12, 10], [4, 10]],
-     "levels": [-1.5, -3.0], "mesh_size": 1.0}
+     "levels": [-1.5, -3.0], "mesh_size": 1.0, "dewatered": true}
   ],
+  "water": {"level": -2.0},
   "stages": [
     {"name": "initial", "kind": "initial", "initial_stress": "k0"},
     {"name": "dig 1", "excavate": ["pit 1"]},
@@ -29,6 +30,12 @@
 
 ``stages`` may be left out: the sequence is then K0 initial stresses, every
 lift in order, and the factor of safety.  Units are kN, m and kPa.
+
+``water`` is the water table: ``{"level": z}`` or ``{"wells": [[x, y, z], ...]}``,
+with optional ``"drawdowns": [{"polygon": [...], "level": z}]`` and
+``"gamma_w"``; left out, the ground is dry.  A stage may set its own
+``"water"`` (the same form, or ``"dry"``).  Soils take ``gamma_sat`` for
+their weight below the water.
 """
 
 from __future__ import annotations
@@ -45,10 +52,39 @@ from ..core.site import Borehole, Excavation, SiteAnchor, SiteWall, Soil, SoilPr
 from ..core.beams import BeamSection, EmbeddedPile
 from ..core.interfaces import InterfaceSpec
 from ..core.structures import PlateSection
+from ..core.water import Drawdown, WaterTable
 
 MODELS = {"mohr-coulomb": MohrCoulomb, "linear-elastic": LinearElastic}
 _STAGE_KEYS = {"name", "kind", "increments", "excavate", "install", "reset_displacements",
-               "initial_stress", "srf_min", "srf_max"}
+               "initial_stress", "srf_min", "srf_max", "water"}
+_WATER_KEYS = {"level", "wells", "drawdowns", "gamma_w"}
+
+
+def water_from_dict(d) -> WaterTable | None:
+    if d is None:
+        return None
+    if d == "dry":
+        return WaterTable.dry()
+    unknown = set(d) - _WATER_KEYS
+    if unknown:
+        raise ValueError(f"water: unknown key(s) {sorted(unknown)}")
+    kw = {"gamma_w": float(d["gamma_w"])} if "gamma_w" in d else {}
+    return WaterTable(level=None if d.get("level") is None else float(d["level"]),
+                      wells=[tuple(map(float, w)) for w in d.get("wells", [])],
+                      drawdowns=[Drawdown([tuple(map(float, p)) for p in dd["polygon"]], float(dd["level"]))
+                                 for dd in d.get("drawdowns", [])], **kw)
+
+
+def water_to_dict(w: WaterTable | None):
+    if w is None:
+        return None
+    if w.is_dry and not w.drawdowns:
+        return "dry"
+    out = {"level": w.level} if w.level is not None else {"wells": [list(x) for x in w.wells]}
+    if w.drawdowns:
+        out["drawdowns"] = [{"polygon": [list(p) for p in d.polygon], "level": d.level} for d in w.drawdowns]
+    out["gamma_w"] = w.gamma_w
+    return out
 
 
 def section_from_dict(d: dict, owner: str) -> PlateSection:
@@ -115,7 +151,8 @@ def site_from_dict(d: dict) -> Site:
                               [(str(n), float(z)) for n, z in b["tops"]]) for b in d["boreholes"]]
         profile = SoilProfile(soils, boreholes, float(d["bottom"]))
         excavations = [Excavation(e["name"], [tuple(map(float, p)) for p in e["polygon"]],
-                                  [float(z) for z in e["levels"]], e.get("mesh_size"))
+                                  [float(z) for z in e["levels"]], e.get("mesh_size"),
+                                  bool(e.get("dewatered", False)))
                        for e in d.get("excavations", [])]
         walls = [SiteWall(w["name"], [tuple(map(float, p)) for p in w["path"]], float(w["toe"]),
                           section_from_dict(w, w["name"]), None if w.get("top") is None else float(w["top"]),
@@ -130,10 +167,13 @@ def site_from_dict(d: dict) -> Site:
             unknown = set(s) - _STAGE_KEYS
             if unknown:
                 raise ValueError(f"stage {s.get('name')!r}: unknown key(s) {sorted(unknown)}")
+            s = dict(s)
+            s["water"] = water_from_dict(s.get("water"))
             stages.append(Stage(**s))
         extent = d["extent"]
         return Site(d.get("name", "site"), profile, tuple(extent["x"]), tuple(extent["y"]),
-                    excavations, stages, float(d.get("mesh_size", 2.0)), walls, anchors, piles)
+                    excavations, stages, float(d.get("mesh_size", 2.0)), walls, anchors, piles,
+                    water_from_dict(d.get("water")))
     except KeyError as err:
         raise ValueError(f"the site description is missing {err}") from None
 
@@ -150,7 +190,9 @@ def site_to_dict(site: Site) -> dict:
         "boreholes": [{"name": b.name, "x": b.x, "y": b.y, "tops": [list(t) for t in b.tops]}
                       for b in profile.boreholes],
         "excavations": [{"name": e.name, "polygon": [list(p) for p in e.polygon], "levels": list(e.levels),
-                         **({"mesh_size": e.mesh_size} if e.mesh_size else {})} for e in site.excavations],
+                         **({"mesh_size": e.mesh_size} if e.mesh_size else {}),
+                         **({"dewatered": True} if e.dewatered else {})} for e in site.excavations],
+        "water": water_to_dict(site.water),
         "walls": [{"name": w.name, "path": [list(p) for p in w.path], "toe": w.toe, "top": w.top,
                    "E": w.section.E, "nu": w.section.nu, "t": w.section.t, "weight": w.section.weight,
                    "interface": None if w.interface is None else {
@@ -163,7 +205,8 @@ def site_to_dict(site: Site) -> dict:
         "stages": [{"name": s.name, "kind": s.kind, "increments": s.increments,
                     "excavate": list(s.excavate), "install": list(s.install),
                     "reset_displacements": s.reset_displacements,
-                    "initial_stress": s.initial_stress, "srf_min": s.srf_min, "srf_max": s.srf_max}
+                    "initial_stress": s.initial_stress, "srf_min": s.srf_min, "srf_max": s.srf_max,
+                    "water": water_to_dict(s.water)}
                    for s in site.stages if not s.loads],
     }
 

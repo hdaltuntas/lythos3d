@@ -63,6 +63,12 @@ whose failure is bounded at its ends. Lythos 3D is for those.
 - **Walls drawn in plan** on a gmsh site: a polyline with a toe level,
   reaching the ground or a given top. A wall may stop short of the base,
   in which case it is embedded in the soil. Anchor ends become exact nodes.
+- **Groundwater**: a phreatic level, constant or read from boreholes, with
+  hydrostatic pore pressure below it, in a drained effective-stress
+  analysis. Soils weigh `gamma_sat` below the water. The water presses on
+  walls and on flooded pit floors. A pit can be pumped dry to each
+  formation level as it is dug, and each stage may set its own water table.
+  ParaView gets pore pressure and total stress.
 - **ParaView output** (`.vtu`): displacements, smoothed stresses and plastic
   strain on quadratic cells, stage by stage, with excavated ground left out.
 
@@ -79,6 +85,7 @@ lythos3d pit -o pit              # a square pit dug in two lifts, then its facto
 lythos3d pit --trench -o trench  # the same section as a long trench, in plane strain (~1 min)
 
 lythos3d site-example -o site.json   # boreholes, dipping layers, a walled and strutted pit
+lythos3d site-example --water -o wet.json   # the same below the water table, pumped dry as dug
 lythos3d mesh site.json -o mesh.vtu  # mesh it; report element quality per soil and lift
 lythos3d run site.json -o run        # stage by stage, then the factor of safety
 pytest
@@ -138,6 +145,23 @@ for k, r in enumerate(results):
 The x = 0 and y = 0 planes are on rollers, as are the far sides, so they act
 as planes of symmetry. For a single load case on elastic ground,
 `lythos3d.core.analysis.linear_static` does without stages.
+
+With groundwater, give the soils a saturated weight and the model a water
+table. A stage can change it, here pumping the pit down to its floor:
+
+```python
+from lythos3d.core.water import WaterTable
+
+clay = MohrCoulomb("sandy clay", E=2.5e4, nu=0.3, gamma=19.0, gamma_sat=20.0, c=12.0, phi=26.0)
+water = WaterTable(level=-1.0)            # or WaterTable(wells=[(x, y, level), ...])
+pumped = water.lowered([(0, 0), (4, 0), (4, 4), (0, 4)], -3.0)
+# Model(..., water=water, stages=[..., Stage("dig to -3.0", excavate=("lift 2",), water=pumped), ...])
+```
+
+The stresses reported are effective. `result.pore_pressure` holds the pore
+pressure at the Gauss points, and ParaView gets `pore_pressure` and
+`total_stress` as well. On a `Site`, an excavation with `dewatered=True`
+is pumped down to each formation level in the default stages.
 
 Units are kN, m and kPa, as in Lythos. `z` points up, and stresses are
 tension positive, stored in the order `[xx, yy, zz, xy, yz, zx]`.
@@ -203,6 +227,12 @@ Every row is a test in `tests/`:
 | Pile head load | carried by skin + base | to 1e-6 |
 | Pile axial capacity | `(T_top + T_tip) L / 2 + F_max` | holds at 97%, not at 103% |
 | Embedded pile against a pile of solid elements (`pytest -m slow`) | 1.22 mm settlement, 0.67 mm lateral | 1.28 mm, 0.72 mm |
+| Pore pressure below a water table, level or from boreholes, with drawdowns | `γw (h − z)` | exact |
+| K0 under water: in the ground, at the surface, standing above it | `σv' = σv − p`, no imbalance | exact, nothing moves |
+| Gravity loading under water | `σ' = γ' z`, total `γsat z` | exact |
+| Lowering the water table | `γw/M (d²/2 + d(H − d))` | exact |
+| Water thrust on a wall with interfaces, dewatered on one side | `½ γw (h₁² − h₂²)` | within 1e-6 |
+| Flooded excavation | same as digging buoyant dry soil | exact |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
 0.5%, and falls with refinement the same way:
@@ -241,7 +271,8 @@ which it sums. So a repeated run can land one bracket lower, for example
 2. ~~**Plasticity and staging**: Mohr-Coulomb in six stress components, K0
    and gravity initial stresses, excavation in lifts, strength reduction,
    checked against 2D Lythos in plane strain.~~
-   Still to come here: groundwater and pore pressure, and constructing
+   ~~Groundwater and hydrostatic pore pressure.~~
+   Still to come here: steady seepage, undrained analysis, and constructing
    volumes (fill) as well as removing them.
 3. ~~**Geometry**: soil layers from boreholes, excavations drawn in plan,
    meshed by gmsh, site files.~~
