@@ -122,21 +122,26 @@ class MaterialState:
     #: excess pore pressure (n,), compression positive, built up where the
     #: soil is loaded undrained
     excess: np.ndarray | None = None
+    #: the largest deviatoric stress q each point has carried: a soil whose
+    #: stiffness depends on its history reloads stiffly below it
+    q_max: np.ndarray | None = None
 
     @classmethod
     def zeros(cls, n: int) -> "MaterialState":
-        return cls(np.zeros((n, 6)), np.zeros((n, 6)), np.zeros(n), np.zeros(n, bool), excess=np.zeros(n))
+        return cls(np.zeros((n, 6)), np.zeros((n, 6)), np.zeros(n), np.zeros(n, bool), excess=np.zeros(n),
+                   q_max=np.zeros(n))
 
     def copy(self) -> "MaterialState":
         return MaterialState(self.stress.copy(), self.plastic_strain.copy(),
                              self.eps_p_eq.copy(), self.yielding.copy(),
                              *(None if a is None else a.copy()
-                               for a in (self.interface, self.embedded, self.tips, self.excess)))
+                               for a in (self.interface, self.embedded, self.tips, self.excess, self.q_max)))
 
     def take(self, idx) -> "MaterialState":
         return MaterialState(self.stress[idx], self.plastic_strain[idx],
                              self.eps_p_eq[idx], self.yielding[idx],
-                             excess=None if self.excess is None else self.excess[idx])
+                             excess=None if self.excess is None else self.excess[idx],
+                             q_max=None if self.q_max is None else self.q_max[idx])
 
     def put(self, idx, other: "MaterialState") -> None:
         self.stress[idx] = other.stress
@@ -145,6 +150,8 @@ class MaterialState:
         self.yielding[idx] = other.yielding
         if other.excess is not None and self.excess is not None:
             self.excess[idx] = other.excess
+        if other.q_max is not None and self.q_max is not None:
+            self.q_max[idx] = other.q_max
 
 
 # ---------------------------------------------------------------------------
@@ -308,8 +315,38 @@ class MohrCoulomb(LinearElastic):
     def update(self, state: MaterialState, dstrain: np.ndarray, z: np.ndarray | None = None):
         D = self.elastic()
         trial = state.stress + dstrain @ D.T
-        n = len(trial)
         c = self.cohesion(z)
+        stress, tangent, plastic = self._return(trial, c)
+        return stress, tangent, self._advance(state, dstrain, stress, plastic, np.linalg.inv(D))
+
+    @staticmethod
+    def _advance(state, dstrain, stress, plastic, compliance):
+        """The new state: plastic strain is what the stress change does not account for elastically.
+
+        ``compliance`` is the inverse elastic matrix, (6, 6) or per point (n, 6, 6).
+        """
+        if compliance.ndim == 2:
+            elastic = (stress - state.stress) @ compliance.T
+        else:
+            elastic = np.einsum("nij,nj->ni", compliance, stress - state.stress)
+        dplastic = dstrain - elastic
+        dplastic[~plastic] = 0.0
+        vol = dplastic[:, :3].sum(axis=1, keepdims=True) / 3.0
+        dev = dplastic.copy()
+        dev[:, :3] -= vol
+        deq = np.sqrt(np.maximum(2.0 / 3.0 * ((dev[:, :3] ** 2).sum(axis=1)
+                                              + 0.5 * (dev[:, 3:] ** 2).sum(axis=1)), 0.0))
+        return MaterialState(stress, state.plastic_strain + dplastic, state.eps_p_eq + deq, plastic)
+
+    def _return(self, trial: np.ndarray, c):
+        """Stress, tangent and plastic mask from a trial stress, with this material's modulus.
+
+        The returned stress does not depend on the modulus - only on the trial
+        stress and Poisson's ratio - and the tangent is proportional to it, so a
+        material whose modulus varies point by point scales the tangent.
+        """
+        D = self.elastic()
+        n = len(trial)
         stress = trial.copy()
         tangent = np.broadcast_to(D, (n, 6, 6)).copy()
         plastic = np.zeros(n, bool)
@@ -333,16 +370,7 @@ class MohrCoulomb(LinearElastic):
                 stress[p] = from_principal(returned[yielded], V[yielded])
                 tangent[p] = self._cartesian_tangent(D_principal[yielded], values[yielded],
                                                      returned[yielded], V[yielded])
-
-        dplastic = dstrain - (stress - state.stress) @ np.linalg.inv(D).T
-        dplastic[~plastic] = 0.0
-        vol = dplastic[:, :3].sum(axis=1, keepdims=True) / 3.0
-        dev = dplastic.copy()
-        dev[:, :3] -= vol
-        deq = np.sqrt(np.maximum(2.0 / 3.0 * ((dev[:, :3] ** 2).sum(axis=1)
-                                              + 0.5 * (dev[:, 3:] ** 2).sum(axis=1)), 0.0))
-        new = MaterialState(stress, state.plastic_strain + dplastic, state.eps_p_eq + deq, plastic)
-        return stress, tangent, new
+        return stress, tangent, plastic
 
     def yield_function(self, stress: np.ndarray, z: np.ndarray | None = None) -> np.ndarray:
         """Mohr-Coulomb yield function, positive outside the surface."""
@@ -505,3 +533,75 @@ class MohrCoulomb(LinearElastic):
             Dp[:, slot, slot] = np.where(close, mu, np.clip(mu * ratio, self.residual_stiffness * mu, mu))
         T = rotation_to_global(V)
         return np.matmul(T, np.matmul(Dp, T.transpose(0, 2, 1)))
+
+
+def deviatoric_q(stress: np.ndarray) -> np.ndarray:
+    """Von Mises equivalent stress ``q = sqrt(3 J2)`` of Voigt stresses (n, 6)."""
+    mean = stress[:, :3].mean(axis=1, keepdims=True)
+    d = stress[:, :3] - mean
+    return np.sqrt(1.5 * ((d ** 2).sum(axis=1) + 2.0 * (stress[:, 3:] ** 2).sum(axis=1)))
+
+
+@dataclass(frozen=True)
+class StressDependentMohrCoulomb(MohrCoulomb):
+    """Mohr-Coulomb whose stiffness grows with confinement and differs between loading and unloading.
+
+    The two effects of the Hardening Soil model that matter most to
+    excavations, without its hardening plasticity:
+
+    * **Stress dependence.**  The modulus is ``E`` at the reference pressure
+      ``p_ref`` and varies as ``((s3 + c cot phi) / (p_ref + c cot phi))^m``,
+      ``s3`` being the minor principal effective stress (compression
+      positive), no lower than ``stress_floor``.  ``m`` is 0.5 for sands,
+      towards 1 for soft clays.
+    * **Unloading and reloading.**  Below the largest deviatoric stress q a
+      point has carried, it responds with ``E_ur`` (3 E by default).  An
+      excavation floor rising under the relief of the ground dug above it
+      unloads, and heaves a third as much as with ``E``; the soil behind a
+      wall, loaded towards failure, stays on ``E``.
+
+    Poisson's ratio is the same for both, and the stiffness is taken from the
+    stress at the start of each step.  Strength is Mohr-Coulomb's, as
+    before.  ``E`` plays the part of ``E50_ref``.
+    """
+
+    E_ur: float | None = None
+    m: float = 0.5
+    p_ref: float = 100.0
+    stress_floor: float = 10.0
+
+    def __post_init__(self):
+        super().__post_init__()
+        if self.E_ur is not None and self.E_ur <= 0:
+            raise ValueError(f"{self.name}: E_ur must be positive")
+        if not 0.0 <= self.m <= 1.0 or self.p_ref <= 0 or self.stress_floor <= 0:
+            raise ValueError(f"{self.name}: need 0 <= m <= 1, p_ref > 0 and stress_floor > 0")
+
+    @property
+    def unloading_modulus(self) -> float:
+        return 3.0 * self.E if self.E_ur is None else self.E_ur
+
+    def factor(self, stress: np.ndarray, c=None) -> np.ndarray:
+        """``((s3 + c cot phi) / (p_ref + c cot phi))^m`` at each point."""
+        c = self.c if c is None else c
+        cot = 1.0 / math.tan(math.radians(self.phi)) if self.phi > 1e-9 else 0.0
+        s3 = np.maximum(-principal_values(stress)[:, 0], self.stress_floor)
+        return ((s3 + c * cot) / (self.p_ref + c * cot)) ** self.m
+
+    def update(self, state: MaterialState, dstrain: np.ndarray, z: np.ndarray | None = None):
+        c = self.cohesion(z)
+        f = self.factor(state.stress, c)
+        D1 = elastic_matrix(1.0, self.nu)
+        step = dstrain @ D1.T
+        q_max = state.q_max if state.q_max is not None else np.zeros(len(dstrain))
+        # loading (q growing past anything carried before) is on E, the rest on E_ur
+        E_ur = self.unloading_modulus * f
+        loading = deviatoric_q(state.stress + E_ur[:, None] * step) > q_max * (1.0 + 1e-9) + 1e-9
+        E = np.where(loading, self.E * f, E_ur)
+        trial = state.stress + E[:, None] * step
+        stress, tangent, plastic = self._return(trial, c)
+        tangent *= (E / self.E)[:, None, None]
+        compliance = np.linalg.inv(D1)[None] / E[:, None, None]
+        new = self._advance(state, dstrain, stress, plastic, compliance)
+        new.q_max = np.maximum(q_max, deviatoric_q(stress))
+        return stress, tangent, new

@@ -47,6 +47,13 @@ whose failure is bounded at its ends. Lythos 3D is for those.
 - **Mohr-Coulomb** with a tension cut-off and non-associated flow: the 2D
   exact return mapping in principal stresses, carried into six stress
   components with its consistent tangent.
+- **Stress-dependent stiffness** (`StressDependentMohrCoulomb`): the
+  modulus grows with confinement as `(σ3'/p_ref)^m`, and soil unloading or
+  reloading below the largest deviatoric stress it has carried responds
+  with `E_ur`. An excavation floor then heaves a third as much, and the
+  ground behind a wall stays on its loading stiffness. These are the two
+  effects of the Hardening Soil model that matter most to excavations,
+  with Mohr-Coulomb's strength.
 - **Staged construction**: K0 or gravity initial stresses, excavation by
   removing volumes of ground in lifts, surface loads per stage.
 - **Fill**: embankments and platforms drawn in plan (`SiteFill`) or as
@@ -334,6 +341,7 @@ Every row is a test in `tests/`:
 | Area load in plan on sloping, then dug ground | resultant `q × plan area` | to 1e-9 |
 | Fill layer over the site | `γf t H / M`, fill under its own weight | exact |
 | Embankment drawn in plan over sloping ground, two lifts | volume above the ground | within 2% |
+| Stress-dependent stiffness: 1D load and unload, excavation heave | `qH/M(E)`, `qH/M(E_ur)`, `γhH/M(E_ur)` | exact |
 | Undrained then drained 1D loading | `qH/(M + Kw/n)`, then `qH/M` | exact |
 | 1D consolidation, one- and two-way drainage | Terzaghi | settlement within 0.5% (40 steps) |
 | Strip footing on undrained clay, slice (`pytest -m slow`) | Prandtl `(2 + π) su` | 3.1% over (0.5 m), 1.6% (0.25 m) |
@@ -391,8 +399,8 @@ which it sums. So a repeated run can land one bracket lower.
 5. ~~**Interface**: a three.js viewer for contours and cut planes, a plan
    editor, DXF plan import and an HTML report.~~
 
-Beyond this scope, natural next steps would be a stiffness that depends on
-stress (hardening soil), more interface types (between soils, under rafts)
+Beyond this scope, natural next steps would be full Hardening Soil (hardening
+plasticity and a cap), more interface types (between soils, under rafts)
 and dynamic loading.
 
 ## Licence

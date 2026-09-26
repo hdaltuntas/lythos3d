@@ -48,7 +48,7 @@ import os
 
 import numpy as np
 
-from ..core.materials import LinearElastic, MohrCoulomb
+from ..core.materials import LinearElastic, MohrCoulomb, StressDependentMohrCoulomb
 from ..core.model import Site
 from ..core.problem import Stage
 from ..core.site import Borehole, Excavation, SiteAnchor, SiteFill, SiteWall, Soil, SoilProfile
@@ -57,7 +57,8 @@ from ..core.interfaces import InterfaceSpec
 from ..core.structures import PlateSection
 from ..core.water import Drawdown, Seepage, WaterTable
 
-MODELS = {"mohr-coulomb": MohrCoulomb, "linear-elastic": LinearElastic}
+MODELS = {"mohr-coulomb": MohrCoulomb, "linear-elastic": LinearElastic,
+          "stress-dependent-mohr-coulomb": StressDependentMohrCoulomb}
 _STAGE_KEYS = {"name", "kind", "increments", "excavate", "construct", "install", "loads", "reset_displacements",
                "initial_stress", "srf_min", "srf_max", "water", "drained", "time", "drained_sides"}
 _WATER_KEYS = {"level", "wells", "drawdowns", "gamma_w", "seepage"}

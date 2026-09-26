@@ -390,10 +390,12 @@ function itemPane() {
   }
   const del = document.createElement("button"); del.textContent = "Delete"; del.style.marginTop = "12px"; del.onclick = () => remove(sel); pane.appendChild(del);
 }
-const SOIL_COLS = [["name", "text"], ["model", ["mohr-coulomb", "linear-elastic"]], ["E", "number"], ["nu", "number"], ["gamma", "number"], ["gamma_sat", "number"],
-  ["c", "number"], ["phi", "number"], ["psi", "number"], ["k", "number"], ["drainage", ["drained", "undrained"]]];
+const SOIL_COLS = [["name", "text"], ["model", ["mohr-coulomb", "stress-dependent-mohr-coulomb", "linear-elastic"]], ["E", "number"], ["nu", "number"], ["gamma", "number"], ["gamma_sat", "number"],
+  ["c", "number"], ["phi", "number"], ["psi", "number"], ["k", "number"], ["drainage", ["drained", "undrained"]],
+  ["E_ur", "number"], ["m", "number"]];
 function soilsPane() {
-  pane.innerHTML = `<p class="muted">Soils in the order they lie, top down. Units: kPa, kN/m³, degrees; k in m/s (or any unit of length per time).</p>`;
+  pane.innerHTML = `<p class="muted">Soils in the order they lie, top down. Units: kPa, kN/m³, degrees; k in m/s (or any unit of length per time).
+    The stress-dependent model takes E at 100 kPa, E_ur for unloading (3E if empty) and the exponent m (0.5 if empty); the others ignore E_ur and m.</p>`;
   const wrap = document.createElement("div"); wrap.className = "soilscroll"; const t = document.createElement("table"); wrap.appendChild(t); pane.appendChild(wrap);
   t.innerHTML = "<tr>" + SOIL_COLS.map(c => `<th>${c[0]}</th>`).join("") + "<th></th></tr>";
   site.soils.forEach((s, i) => {
@@ -451,11 +453,12 @@ function checkPane() {
 
 // ---------------------------------------------------------------- files
 function toJSON() {
-  const soil = n => { const s = site.soils.find(q => q.name === n) || site.soils[0]; return clean({...s}); };
+  const soil = n => soilOut(site.soils.find(q => q.name === n) || site.soils[0]);
   const clean = o => { for (const k of Object.keys(o)) if (o[k] === null || o[k] === "" || k.startsWith("_")) delete o[k]; return o; };
+  const soilOut = s => { const o = clean({...s}); if (o.model !== "stress-dependent-mohr-coulomb") { delete o.E_ur; delete o.m; delete o.p_ref; delete o.stress_floor; } return o; };
   const out = {
     name: site.name, extent: site.extent, bottom: site.bottom, mesh_size: site.mesh_size,
-    soils: site.soils.map(s => clean({...s})),
+    soils: site.soils.map(soilOut),
     boreholes: site.boreholes.map(b => ({name: b.name, x: b.x, y: b.y, tops: b.tops})),
     excavations: site.excavations.map(p => clean({name: p.name, polygon: p.polygon, levels: p.levels, mesh_size: p.mesh_size ?? null, dewatered: p.dewatered || null})),
     walls: site.walls.map(w => clean({name: w.name, path: w.path, toe: w.toe, top: w.top, E: w.E, nu: w.nu, t: w.t, weight: w.weight, interface: w.interface})),

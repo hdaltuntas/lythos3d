@@ -774,3 +774,30 @@ ground surface. A cut plane clips the surface and draws the field on the
 section of every tetrahedron it crosses, interpolated linearly along the
 edges. three.js 0.160 (MIT licence, in `lythos3d/io/vendor`) is inlined as
 data URLs in an import map, so a report opens without a network.
+
+
+## Stress-dependent stiffness
+
+`StressDependentMohrCoulomb` keeps Mohr-Coulomb's strength and changes
+its elasticity in the two ways that matter most to excavations. These are
+the elastic parts of the Hardening Soil model.
+
+- **Confinement.** `E(σ) = E · ((σ3' + c cot φ) / (p_ref + c cot φ))^m`,
+  where `σ3'` is the minor principal effective stress (compression
+  positive), held no lower than `stress_floor`.
+- **History.** Every point keeps the largest deviatoric stress
+  `q = √(3 J₂)` it has carried. A step that takes `q` past it is primary
+  loading and uses `E`. Anything below it is unloading or reloading and
+  uses `E_ur` (3E by default). The soil under an excavation floor unloads
+  and heaves a third as much. The ground behind a wall, pushed towards
+  active failure, stays on `E`.
+
+The modulus is taken from the stress at the start of each step, and
+Poisson's ratio is shared. The Mohr-Coulomb return mapping does not depend
+on the modulus's scale: the returned stress depends only on the trial
+stress and on ν, and the tangent is proportional to E. So the same return
+mapping serves every point's own modulus, and the tangent is scaled by
+`E_point / E`.
+
+Checks: a confined column loaded and unloaded settles `qH/M(E)` and rebounds
+`qH/M(E_ur)`, and an excavation floor heaves `γhH/M(E_ur)`, both exactly.
