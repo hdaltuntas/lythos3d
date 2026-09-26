@@ -537,8 +537,7 @@ real stands in the way: the pressure difference acts on the soil along the
 drawdown's edge, as it does with a dry cluster in 2D. The same holds below
 the toe of a wall round a dewatered pit. Real water flows under the toe
 and the pressure is continuous there. A hydrostatic analysis cannot know
-this, and a seepage analysis is on the roadmap. Until then, draw a drawdown
-along walls, and treat heave below a deep pit's toe with caution.
+this; a seepage analysis (below) can.
 
 **K0.** The profile gives the total overburden with `γ` above the water,
 `γsat` below it and the water standing on the ground. The pore pressure is
@@ -571,3 +570,67 @@ cuts through elements, and where it does the kink in `p` is integrated
 approximately. Evaluating the water's load as 2D does, as a body force
 `−∇p` at the Gauss points, gave the same 1.269 at 2.5 m, so the difference
 is in the elements rather than in how the water is applied.
+
+## Steady seepage
+
+With `Seepage(table)` as the water, the pore pressure comes from a flow
+solution rather than a level. Darcy's law and continuity give
+`∇·(k ∇h) = 0` for the total head `h = z + p/γw`. It is solved on the same
+quadratic tetrahedra, with the head at every node, and the pressure is
+then `γw (h − z)` wherever that is positive. Each soil has a horizontal
+permeability `k` and a vertical one `k_v`. For the heads only their ratios
+matter; flows come out in the units of `k` times m².
+
+**Boundaries.** They come from the same `WaterTable` a hydrostatic analysis
+uses:
+
+- *Open sides of the model box:* the head is held at the table's level
+  below it. Above it they are seepage face candidates.
+- *Base, and sides named in `closed`* (planes of symmetry): no flow.
+- *Ground under standing water* (every free face not on the box): the head
+  is held at the water's level. This covers a lake, a flooded pit, and a
+  pit floor inside a drawdown, pumped to its level. The level is read
+  inside the ground's own element, so a node on the line of a wall belongs
+  to the pit or to the ground outside by its side.
+- *Ground above the water:* a seepage face candidate. The head is held at
+  `h = z` where water flows out, and the face is closed where holding it
+  would draw water in. Faces are released and captured until both hold
+  everywhere. This is judged only on a converged head: judged
+  mid-iteration, the set flips back and forth indefinitely.
+- *Walls with interfaces* are impermeable, because the soil either side has
+  its own nodes. Until the wall is installed the two sides are joined again
+  for the flow. A wall without an interface lets water through.
+
+**The phreatic surface** is found as part of the solution. Where the
+pressure head `ψ = h − z` is negative, the permeability is cut back by
+`k_min` (1e-4) over a transition `psi_k` (0.7 m). The cut is log-linear with
+a smooth-step profile, so that it has no kink. The problem is non-linear, and is
+solved by Newton's method with the change of permeability in the Jacobian.
+Picard iteration (solve, update `k`, solve again) cycled without
+settling on the rectangular dam. A sharp transition is reached by
+continuation: first a transition a quarter of the model's head range wide,
+then halving it towards `psi_k`, backing off when a step fails.
+
+**Coupling.** The pore pressure at the Gauss points and on the faces enters
+the loads on the skeleton exactly as in the hydrostatic case. It is solved
+again at every stage, because digging changes the flow domain and
+installing a wall closes it. Heave under a pumped pit and uplift on its
+floor then follow from the actual flow.
+
+**Checks** (all tests):
+
+| Case | Closed form | Lythos 3D |
+| --- | --- | --- |
+| Flow along two layers | `W Σ kᵢ tᵢ ΔH / L` | exact, heads exact |
+| Flow across two layers | `ΔH / Σ Lᵢ/kᵢ` | exact, heads exact |
+| Rectangular dam, heads 5 and 1 over 6 m (Charny) | `k (H₁² − H₂²) / 2L = 2.000` | 2.067 (`psi_k` 0.7), 2.016 (0.2), 2.002 (0.05) |
+| Still water | hydrostatic | to 1e-6 |
+| Pumped pit behind an impermeable wall | all inflow pumped | to 1e-6 |
+
+On the dam, the excess over Charny's discharge is water carried by the
+unsaturated zone. It shrinks with `psi_k`, at the cost of more Newton
+iterations: 40 at 0.7 m, 120 at 0.2 m and 470 at 0.05 m, on a 0.25 m mesh.
+
+A deeper wall lets less water into a pumped pit, and a permeable one lets
+in more. Below the toe the head is continuous: it differs by less than 0.3 m
+2 m either side of the wall at 3 m below its toe.

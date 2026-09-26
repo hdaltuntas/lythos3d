@@ -83,7 +83,7 @@ def walled_pit(mesh_size: float = 2.5):
     return site
 
 
-def dewatered_pit(mesh_size: float = 2.5):
+def dewatered_pit(mesh_size: float = 2.5, seepage: bool = False):
     """The walled pit of :func:`walled_pit` below the water table, pumped dry as it is dug.
 
     The water stands 1.5 m below the original ground at BH1 (level -1.5).
@@ -91,6 +91,10 @@ def dewatered_pit(mesh_size: float = 2.5):
     reached; outside it stays where it was, so the wall carries the
     difference.  The wall is modelled with interfaces, which carry the
     water pressure across to it on both sides.
+
+    With ``seepage`` the flow is solved: the wall is impermeable, water
+    comes in from the sides of the model and under the toe, and is pumped
+    out of the pit floor.  The permeabilities are typical of the soils.
     """
     from dataclasses import replace
 
@@ -98,11 +102,16 @@ def dewatered_pit(mesh_size: float = 2.5):
     from .core.water import WaterTable
 
     site = walled_pit(mesh_size)
-    for soil, gamma_sat in zip(site.profile.soils, (20.0, 20.0, 21.0)):
-        soil.material = replace(soil.material, gamma_sat=gamma_sat)
+    for soil, gamma_sat, k in zip(site.profile.soils, (20.0, 20.0, 21.0), (1e-5, 1e-8, 1e-4)):
+        soil.material = replace(soil.material, gamma_sat=gamma_sat, k=k)
     site.name = "dewatered walled pit on sloping ground"
     site.walls[0].interface = InterfaceSpec(R=0.67)
     site.excavations[0].dewatered = True
     site.water = WaterTable(level=-1.5)
+    if seepage:
+        from .core.water import Seepage
+
+        site.name += ", with seepage"
+        site.water = Seepage(site.water)
     site.stages = site.default_stages()
     return site

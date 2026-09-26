@@ -94,7 +94,8 @@ def _site_example(args) -> int:
     from .examples import dewatered_pit, walled_pit
     from .io.site_json import save_site
 
-    print(f"written {save_site(dewatered_pit() if args.water else walled_pit(), args.out)}")
+    site = dewatered_pit(seepage=args.seepage) if args.water or args.seepage else walled_pit()
+    print(f"written {save_site(site, args.out)}")
     return 0
 
 
@@ -155,7 +156,8 @@ def _run(args) -> int:
                         "max_pore_pressure_kPa": round(float(r.pore_pressure.max()), 1)
                         if r.pore_pressure is not None and len(r.pore_pressure) else 0.0,
                         "plastic_fraction": round(r.plastic_fraction, 4),
-                        "factor_of_safety": r.srf, "message": r.message, "file": path})
+                        "factor_of_safety": r.srf, "message": r.message, "file": path,
+                        **({"seepage": r.flows} if r.flows else {})})
         line = f"  {stage.name}: {'ok' if r.converged else 'FAILED'}"
         line += (f", factor of safety {r.srf:.2f}" if r.srf is not None
                  else f", moved up to {1000 * r.max_displacement:.1f} mm in this stage" if k else "")
@@ -164,6 +166,9 @@ def _run(args) -> int:
             print(f"    {name}: largest moment {m:.1f} kNm/m")
         for name, force in r.bar_forces.items():
             print(f"    {name}: {force:.0f} kN")
+        if r.flows and stage.kind != "ssr":
+            print(f"    seepage: {r.flows['in']:.3g} in, pumped from the pit {r.flows['pumped']:.3g} "
+                  f"(units of k times m2)")
         for name, pf in r.pile_forces.items():
             N = pf["resultants"][:, 0]
             M = np.hypot(pf["resultants"][:, 4], pf["resultants"][:, 5])
@@ -207,6 +212,8 @@ def main(argv=None) -> int:
     p.add_argument("-o", "--out", default="site.json")
     p.add_argument("--water", action="store_true",
                    help="below the water table, with the pit pumped dry as it is dug")
+    p.add_argument("--seepage", action="store_true",
+                   help="as --water, with the flow into the pit solved rather than hydrostatic")
     p.set_defaults(func=_site_example)
 
     p = sub.add_parser("mesh", help="mesh a site description and report on the mesh")

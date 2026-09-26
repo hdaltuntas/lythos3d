@@ -117,7 +117,8 @@ def write_stage(path: str | os.PathLike, problem, result) -> str:
     is simply absent.  ``plastic_strain`` (equivalent plastic strain, mean per
     element) is what shows a failure mechanism: after a strength reduction it
     traces the slip surface.  ``stress`` is effective; with groundwater
-    ``pore_pressure`` and ``total_stress`` are written as well.
+    ``pore_pressure`` and ``total_stress`` are written as well, and with
+    seepage the total ``head`` and the ``darcy_velocity`` (element means).
     """
     mesh = problem.mesh
     ce = problem.continuum
@@ -144,6 +145,13 @@ def write_stage(path: str | os.PathLike, problem, result) -> str:
         point_data["pore_pressure"] = nodal_p
         point_data["total_stress"] = nodal_stress - nodal_p[:, None] * np.array([1, 1, 1, 0, 0, 0], float)
 
+    cell_extra = {}
+    head = getattr(result, "head", None)
+    if head is not None:
+        point_data["head"] = np.nan_to_num(head)
+        v = result.velocity.reshape(mesh.n_elements, ngp, 3).mean(axis=1)[active]
+        cell_extra["darcy_velocity"] = v
+
     return write_vtu(
         path, mesh.nodes, mesh.elements[active],
         point_data=point_data,
@@ -151,6 +159,7 @@ def write_stage(path: str | os.PathLike, problem, result) -> str:
             "region": mesh.region[active],
             "plastic_strain": per_element(result.state.eps_p_eq),
             "plastic_fraction": per_element(result.state.yielding.astype(float)),
+            **cell_extra,
         },
     )
 

@@ -18,7 +18,7 @@ from .assembly import CombinedPattern, SparsityPattern, assemble_vector
 from .elements import TET10_FACES, ContinuumElements, face_traction, tri6_shape
 from .mesh import Mesh
 from .structures import TRI6_GAUSS_BARY, TRI6_GAUSS_WEIGHT, Bar, Plate, PlateElements
-from .water import WaterTable
+from .water import DryField, HydrostaticField, PoreField, Seepage, WaterTable
 
 INITIAL = "initial"
 PLASTIC = "plastic"
@@ -148,6 +148,8 @@ class Problem:
         self.interface_elements = None
         self.interface_plate = np.zeros(0, dtype=np.int64)
         self.interface_support = np.zeros(0, dtype=np.int64)
+        #: per plate with an interface: (original nodes, their copies behind the plate)
+        self.split_nodes: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         split = [i for i, p in enumerate(self.plates) if p.interface is not None]
         if not split:
             return
@@ -197,6 +199,7 @@ class Problem:
             new_wall[idx] = len(nodes) + np.arange(len(idx))
             new_back[idx] = len(nodes) + len(idx) + np.arange(len(idx))
             nodes = np.vstack([nodes, nodes[idx], nodes[idx]])
+            self.split_nodes[i] = (idx, new_back[idx])
             back = touching[side < 0]
             elements[back] = new_back[elements[back]]
             plate.faces = new_wall[faces]
@@ -439,13 +442,29 @@ class Problem:
                 raise ValueError(f"stage {stage.name!r} installs unknown structure {name!r}")
 
     # ------------------------------------------------------------------ loads
-    def gravity(self, active: np.ndarray, water: WaterTable | None = None) -> np.ndarray:
-        """Nodal self weight of the active elements, saturated below the water table."""
+    def pore_field(self, water, active: np.ndarray, installed=()) -> PoreField:
+        """The pore pressure a water table or a seepage flow sets up over the active ground.
+
+        ``installed`` lists the plates built so far; a wall with an interface
+        stops the water once it is there.
+        """
+        if isinstance(water, PoreField):
+            return water
+        if water is None or water.is_dry:
+            return DryField(self.n_points)
+        if isinstance(water, Seepage):
+            from .seepage import solve_seepage
+
+            return solve_seepage(self, water, active, installed)
+        return HydrostaticField(water, self.continuum.gauss_xyz.reshape(-1, 3),
+                                np.repeat(active, self.continuum.n_gauss))
+
+    def gravity(self, active: np.ndarray, water=None) -> np.ndarray:
+        """Nodal self weight of the active elements, saturated where there is pore pressure."""
         ce = self.continuum
+        field = self.pore_field(water, active)
         gamma = np.zeros(self.n_points)
-        points = ce.gauss_xyz.reshape(-1, 3)
-        wet = (points[:, 2] < water.head(points)) if water is not None and not water.is_dry \
-            else np.zeros(self.n_points, bool)
+        wet = field.gauss > 0.0
         for mat, gp in self.material_groups():
             gamma[gp] = np.where(wet[gp], mat.saturated_weight, mat.gamma)
         gamma = gamma.reshape(ce.n_elements, ce.n_gauss)
@@ -455,13 +474,9 @@ class Problem:
         return assemble_vector(self.n_dof, self.dofs, f)
 
     # ----------------------------------------------------------------- water
-    def pore_pressure(self, water: WaterTable | None, active: np.ndarray) -> np.ndarray:
+    def pore_pressure(self, water, active: np.ndarray) -> np.ndarray:
         """Pore pressure at the Gauss points (compression positive), zero outside the active ground."""
-        if water is None or water.is_dry:
-            return np.zeros(self.n_points)
-        p = water.pressure(self.continuum.gauss_xyz.reshape(-1, 3))
-        p[~np.repeat(active, self.continuum.n_gauss)] = 0.0
-        return p
+        return self.pore_field(water, active).gauss
 
     def free_faces(self, active: np.ndarray):
         """Faces of the active elements that no other active element shares: ``(faces (n, 6), owner (n,))``."""
@@ -473,7 +488,7 @@ class Problem:
         free = counts[inverse.ravel()] == 1
         return faces[free], owner[free]
 
-    def _water_on_faces(self, water: WaterTable, faces: np.ndarray, owner: np.ndarray) -> np.ndarray:
+    def _water_on_faces(self, field: PoreField, faces: np.ndarray, owner: np.ndarray) -> np.ndarray:
         """Nodal forces (n, 18) of the water pressing on faces of the elements ``owner``.
 
         The pressure is taken just inside the owning element, so that a face
@@ -492,33 +507,34 @@ class Problem:
             N = tri6_shape(L)
             point = np.einsum("a,faj->fj", N, x[faces])
             point += 1e-6 * (centre - point)
-            p = water.pressure(point)
+            p = field.at(point, owner)
             f -= (w * area * p)[:, None, None] * N[None, :, None] * normal[:, None, :]
         return f.reshape(len(faces), 18)
 
-    def water_loads(self, water: WaterTable | None, active: np.ndarray) -> np.ndarray:
+    def water_loads(self, water, active: np.ndarray) -> np.ndarray:
         """What the pore water does to the skeleton: ``int B^T m p dV`` less the water on free faces.
 
         A wall with an interface stands between two free faces of the soil;
         the water pressing on those faces is carried across to the wall.
         """
         f = np.zeros(self.n_dof)
-        if water is None or water.is_dry:
+        field = self.pore_field(water, active)
+        if field.is_dry:
             return f
         ce = self.continuum
-        p = self.pore_pressure(water, active).reshape(ce.n_elements, ce.n_gauss)
+        p = field.gauss.reshape(ce.n_elements, ce.n_gauss)
         # m^T B: the divergence row of B, the sum of its three normal-strain rows
         div = ce.B[:, :, 0] + ce.B[:, :, 1] + ce.B[:, :, 2]            # (ne, ng, 30)
         fe = np.einsum("egi,eg->ei", div, p * ce.detJw)
         f += assemble_vector(self.n_dof, self.dofs, fe)
         faces, owner = self.free_faces(active)
         fdofs = (3 * faces[:, :, None] + np.arange(3)).reshape(len(faces), 18)
-        f += assemble_vector(self.n_dof, fdofs, self._water_on_faces(water, faces, owner))
+        f += assemble_vector(self.n_dof, fdofs, self._water_on_faces(field, faces, owner))
         ie = self.interface_elements
         if ie is not None:
             live = active[self.interface_support]
             if live.any():
-                on_soil = self._water_on_faces(water, ie.soil_faces[live], self.interface_support[live])
+                on_soil = self._water_on_faces(field, ie.soil_faces[live], self.interface_support[live])
                 wdofs = (3 * ie.wall_faces[live][:, :, None] + np.arange(3)).reshape(-1, 18)
                 f -= assemble_vector(self.n_dof, wdofs, on_soil)
         return f
@@ -544,10 +560,12 @@ class Problem:
         return f
 
     # ----------------------------------------------------------- initial state
-    def k0_stress(self, active: np.ndarray, water: WaterTable | None = None) -> np.ndarray:
+    def k0_stress(self, active: np.ndarray, water=None, field: PoreField | None = None) -> np.ndarray:
         """Geostatic effective stress at the Gauss points: ``sv'`` from the overburden, ``sh' = K0 sv'``.
 
-        ``sv'`` is the total overburden less the pore pressure.
+        ``sv'`` is the total overburden, saturated below the water table's
+        level, less the pore pressure (``field``'s, when a seepage solution
+        gives it).
         """
         if self.vertical_stress is None:
             raise ValueError("the K0 procedure needs the overburden (a stratum profile); "
@@ -557,7 +575,8 @@ class Problem:
             sv = np.asarray(self.vertical_stress(points), dtype=float)
         else:
             sv = np.asarray(self.vertical_stress(points, water.head(points)), dtype=float)
-            sv = sv - water.pressure(points)
+            field = self.pore_field(water, active) if field is None else field
+            sv = sv - field.gauss
         k0 = np.zeros(self.n_points)
         for mat, gp in self.material_groups():
             k0[gp] = mat.k0

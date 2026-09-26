@@ -33,9 +33,11 @@ lift in order, and the factor of safety.  Units are kN, m and kPa.
 
 ``water`` is the water table: ``{"level": z}`` or ``{"wells": [[x, y, z], ...]}``,
 with optional ``"drawdowns": [{"polygon": [...], "level": z}]`` and
-``"gamma_w"``; left out, the ground is dry.  A stage may set its own
-``"water"`` (the same form, or ``"dry"``).  Soils take ``gamma_sat`` for
-their weight below the water.
+``"gamma_w"``; left out, the ground is dry.  Add ``"seepage": {}`` (or
+``{"closed": ["xmin"], "psi_k": 0.7}``) to solve the steady flow instead of
+taking the water as hydrostatic.  A stage may set its own ``"water"`` (the
+same form, or ``"dry"``).  Soils take ``gamma_sat`` for their weight below
+the water, and ``k`` (and ``k_v``) for their permeability.
 """
 
 from __future__ import annotations
@@ -52,15 +54,18 @@ from ..core.site import Borehole, Excavation, SiteAnchor, SiteWall, Soil, SoilPr
 from ..core.beams import BeamSection, EmbeddedPile
 from ..core.interfaces import InterfaceSpec
 from ..core.structures import PlateSection
-from ..core.water import Drawdown, WaterTable
+from ..core.water import Drawdown, Seepage, WaterTable
 
 MODELS = {"mohr-coulomb": MohrCoulomb, "linear-elastic": LinearElastic}
 _STAGE_KEYS = {"name", "kind", "increments", "excavate", "install", "reset_displacements",
                "initial_stress", "srf_min", "srf_max", "water"}
-_WATER_KEYS = {"level", "wells", "drawdowns", "gamma_w"}
+_WATER_KEYS = {"level", "wells", "drawdowns", "gamma_w", "seepage"}
+_SEEPAGE_KEYS = {"closed", "psi_k", "k_min"}
 
 
-def water_from_dict(d) -> WaterTable | None:
+def water_from_dict(d):
+    """``"dry"``, or ``{"level" | "wells", "drawdowns", "gamma_w"}``; with ``"seepage": {...}``
+    (``closed``, ``psi_k``, ``k_min``, all optional) the flow is solved rather than assumed hydrostatic."""
     if d is None:
         return None
     if d == "dry":
@@ -69,21 +74,35 @@ def water_from_dict(d) -> WaterTable | None:
     if unknown:
         raise ValueError(f"water: unknown key(s) {sorted(unknown)}")
     kw = {"gamma_w": float(d["gamma_w"])} if "gamma_w" in d else {}
-    return WaterTable(level=None if d.get("level") is None else float(d["level"]),
-                      wells=[tuple(map(float, w)) for w in d.get("wells", [])],
-                      drawdowns=[Drawdown([tuple(map(float, p)) for p in dd["polygon"]], float(dd["level"]))
-                                 for dd in d.get("drawdowns", [])], **kw)
+    table = WaterTable(level=None if d.get("level") is None else float(d["level"]),
+                       wells=[tuple(map(float, w)) for w in d.get("wells", [])],
+                       drawdowns=[Drawdown([tuple(map(float, p)) for p in dd["polygon"]], float(dd["level"]))
+                                  for dd in d.get("drawdowns", [])], **kw)
+    flow = d.get("seepage")
+    if flow is None or flow is False:
+        return table
+    flow = {} if flow is True else dict(flow)
+    unknown = set(flow) - _SEEPAGE_KEYS
+    if unknown:
+        raise ValueError(f"seepage: unknown key(s) {sorted(unknown)}")
+    return Seepage(table, **flow)
 
 
-def water_to_dict(w: WaterTable | None):
+def water_to_dict(w):
     if w is None:
         return None
+    seepage = None
+    if isinstance(w, Seepage):
+        seepage = {"closed": list(w.closed), "psi_k": w.psi_k, "k_min": w.k_min}
+        w = w.table
     if w.is_dry and not w.drawdowns:
         return "dry"
     out = {"level": w.level} if w.level is not None else {"wells": [list(x) for x in w.wells]}
     if w.drawdowns:
         out["drawdowns"] = [{"polygon": [list(p) for p in d.polygon], "level": d.level} for d in w.drawdowns]
     out["gamma_w"] = w.gamma_w
+    if seepage is not None:
+        out["seepage"] = seepage
     return out
 
 

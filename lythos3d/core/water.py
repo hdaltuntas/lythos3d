@@ -147,3 +147,123 @@ def layered_overburden(z: np.ndarray, tops: np.ndarray, bases: np.ndarray, gamma
     sv = (thickness - wet) @ gamma + wet @ gamma_sat
     ground = np.maximum(tops[:, 0], z)
     return sv + gamma_w * np.clip(level - ground, 0.0, None)
+
+
+@dataclass(frozen=True)
+class Seepage:
+    """Steady groundwater flow, solved over the ground rather than assumed hydrostatic.
+
+    ``table`` gives the boundary conditions: its level is the head held on
+    the open sides of the model box (where they lie below it) and the level
+    of any water standing on the ground; its drawdowns are levels the water
+    is pumped down to, and hold the head on the ground inside them.  Ground
+    above the water is a seepage face where water flows out of it, and
+    closed where it would flow in.  The base of the model is closed, and so
+    are the sides named in ``closed`` - ``"xmin"``, ``"xmax"``, ``"ymin"``,
+    ``"ymax"`` - such as planes of symmetry.  A wall with an interface is
+    impermeable; without one, water passes through it.
+
+    Above the phreatic surface the permeability falls log-linearly from its
+    full value at zero pressure to ``k_min`` times it at a suction head of
+    ``psi_k`` metres, which is how the surface is found.
+    """
+
+    table: WaterTable
+    closed: tuple = ()
+    psi_k: float = 0.7
+    k_min: float = 1.0e-4
+
+    def __post_init__(self):
+        object.__setattr__(self, "closed", tuple(self.closed))
+        unknown = set(self.closed) - {"xmin", "xmax", "ymin", "ymax"}
+        if unknown:
+            raise ValueError(f"seepage: unknown side(s) {sorted(unknown)}")
+        if self.table.is_dry:
+            raise ValueError("seepage needs a water table for its boundary conditions")
+        if self.psi_k <= 0 or not 0 < self.k_min <= 1:
+            raise ValueError("seepage: need psi_k > 0 and 0 < k_min <= 1")
+
+    @property
+    def is_dry(self) -> bool:
+        return False
+
+    @property
+    def gamma_w(self) -> float:
+        return self.table.gamma_w
+
+    def lowered(self, polygon, level: float) -> "Seepage":
+        """This flow with the water inside ``polygon`` pumped down to ``level``."""
+        return replace(self, table=self.table.lowered(polygon, level))
+
+    def head(self, points: np.ndarray) -> np.ndarray:
+        """The water table's level: the hydrostatic guess the K0 procedure uses."""
+        return self.table.head(points)
+
+
+class PoreField:
+    """The pore pressure of one stage, at the Gauss points and anywhere inside an element.
+
+    ``gauss`` (n_points,) is zero outside the active ground.  ``at(points,
+    owners)`` gives the pressure at points inside the elements ``owners``.
+    ``head`` (n_nodes,) and the flow are set for a seepage solution.
+    """
+
+    is_dry = False
+    head = None
+    velocity = None
+    flows: dict = {}
+
+    def __init__(self, gauss: np.ndarray):
+        self.gauss = gauss
+
+    def at(self, points: np.ndarray, owners: np.ndarray) -> np.ndarray:
+        raise NotImplementedError
+
+
+class DryField(PoreField):
+    is_dry = True
+
+    def __init__(self, n_points: int):
+        super().__init__(np.zeros(n_points))
+
+    def at(self, points, owners):
+        return np.zeros(len(points))
+
+
+class HydrostaticField(PoreField):
+    def __init__(self, table: WaterTable, gauss_xyz: np.ndarray, active_points: np.ndarray):
+        p = table.pressure(gauss_xyz)
+        p[~active_points] = 0.0
+        super().__init__(p)
+        self.table = table
+
+    def at(self, points, owners):
+        return self.table.pressure(points)
+
+
+class HeadField(PoreField):
+    """Pore pressure from a head field on the quadratic tetrahedra: ``p = gamma_w max(h - z, 0)``."""
+
+    def __init__(self, head: np.ndarray, nodes: np.ndarray, elements: np.ndarray, gauss_N: np.ndarray,
+                 gauss_xyz: np.ndarray, active: np.ndarray, gamma_w: float):
+        self.head, self.nodes, self.elements, self.gamma_w = head, nodes, elements, gamma_w
+        ng = len(gauss_N)
+        h = np.zeros((len(elements), ng))
+        h[active] = np.nan_to_num(head[elements[active]]) @ gauss_N.T
+        p = gamma_w * np.maximum(h.ravel() - gauss_xyz[:, 2], 0.0)
+        p[~np.repeat(active, ng)] = 0.0
+        super().__init__(p)
+
+    def head_at(self, points: np.ndarray, owners: np.ndarray) -> np.ndarray:
+        from .elements import TET10_EDGES
+
+        P = self.nodes[self.elements[owners, :4]]
+        lam = np.linalg.solve(np.transpose(P[:, 1:] - P[:, :1], (0, 2, 1)),
+                              (points - P[:, 0])[:, :, None])[:, :, 0]
+        L = np.column_stack([1.0 - lam.sum(axis=1), lam])
+        N = np.column_stack([L * (2.0 * L - 1.0)] + [4.0 * L[:, i] * L[:, j] for i, j in TET10_EDGES])
+        return np.einsum("na,na->n", N, np.nan_to_num(self.head[self.elements[owners]]))
+
+    def at(self, points, owners):
+        points = np.atleast_2d(np.asarray(points, float))
+        return self.gamma_w * np.maximum(self.head_at(points, owners) - points[:, 2], 0.0)

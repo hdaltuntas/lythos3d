@@ -69,6 +69,12 @@ whose failure is bounded at its ends. Lythos 3D is for those.
   walls and on flooded pit floors. A pit can be pumped dry to each
   formation level as it is dug, and each stage may set its own water table.
   ParaView gets pore pressure and total stress.
+- **Steady seepage**: the head solved over the ground, with the phreatic
+  surface and seepage faces found by the solution, anisotropic
+  permeability per soil, walls with interfaces impermeable. Water comes in
+  under the toe of a wall into a pumped pit, and the flow the pumps must
+  lift is reported. Its pore pressures load the soil as the hydrostatic ones
+  do, stage by stage.
 - **ParaView output** (`.vtu`): displacements, smoothed stresses and plastic
   strain on quadratic cells, stage by stage, with excavated ground left out.
 
@@ -86,6 +92,7 @@ lythos3d pit --trench -o trench  # the same section as a long trench, in plane s
 
 lythos3d site-example -o site.json   # boreholes, dipping layers, a walled and strutted pit
 lythos3d site-example --water -o wet.json   # the same below the water table, pumped dry as dug
+lythos3d site-example --seepage -o flow.json   # the same with the flow into the pit solved
 lythos3d mesh site.json -o mesh.vtu  # mesh it; report element quality per soil and lift
 lythos3d run site.json -o run        # stage by stage, then the factor of safety
 pytest
@@ -157,6 +164,10 @@ water = WaterTable(level=-1.0)            # or WaterTable(wells=[(x, y, level), 
 pumped = water.lowered([(0, 0), (4, 0), (4, 4), (0, 4)], -3.0)
 # Model(..., water=water, stages=[..., Stage("dig to -3.0", excavate=("lift 2",), water=pumped), ...])
 ```
+
+For the flow itself rather than a level, give `Seepage(water)` instead
+(`k` and `k_v` on the soils set their permeability). The head, Darcy
+velocity and flows (`result.flows["pumped"]`) come with each stage.
 
 The stresses reported are effective. `result.pore_pressure` holds the pore
 pressure at the Gauss points, and ParaView gets `pore_pressure` and
@@ -233,6 +244,9 @@ Every row is a test in `tests/`:
 | Lowering the water table | `γw/M (d²/2 + d(H − d))` | exact |
 | Water thrust on a wall with interfaces, dewatered on one side | `½ γw (h₁² − h₂²)` | within 1e-6 |
 | Flooded excavation | same as digging buoyant dry soil | exact |
+| Seepage along and across layers | `W Σ kᵢ tᵢ ΔH/L`, `ΔH / Σ Lᵢ/kᵢ` | exact |
+| Rectangular dam, free surface and seepage face (Charny) | `k (H₁² − H₂²)/2L` | within 3.3% (0.8% with `psi_k` = 0.2) |
+| Pumped pit behind an impermeable wall | all inflow pumped, less with a deeper wall | to 1e-6 |
 
 At the same element sizes the plane-strain slice follows 2D Lythos to within
 0.5%, and falls with refinement the same way towards Bishop's 1.379:
@@ -275,8 +289,8 @@ which it sums. So a repeated run can land one bracket lower.
 2. ~~**Plasticity and staging**: Mohr-Coulomb in six stress components, K0
    and gravity initial stresses, excavation in lifts, strength reduction,
    checked against 2D Lythos in plane strain.~~
-   ~~Groundwater and hydrostatic pore pressure.~~
-   Still to come here: steady seepage, undrained analysis, and constructing
+   ~~Groundwater, hydrostatic pore pressure and steady seepage.~~
+   Still to come here: undrained analysis, consolidation, and constructing
    volumes (fill) as well as removing them.
 3. ~~**Geometry**: soil layers from boreholes, excavations drawn in plan,
    meshed by gmsh, site files.~~

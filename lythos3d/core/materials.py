@@ -146,7 +146,10 @@ class LinearElastic:
     ``K0`` is the ratio of horizontal to vertical stress the K0 procedure
     uses; by default it is the elastic value under zero lateral strain,
     ``nu / (1 - nu)``.  ``gamma_sat`` is the unit weight below the water
-    table (by default ``gamma``).
+    table (by default ``gamma``).  ``k`` is the horizontal permeability and
+    ``k_v`` the vertical one (by default ``k``), for seepage; only their
+    ratios matter to the heads, and flows come out in the units of ``k``
+    times m2.
     """
 
     name: str
@@ -155,6 +158,8 @@ class LinearElastic:
     gamma: float = 0.0
     K0: float | None = None
     gamma_sat: float | None = None
+    k: float = 1.0
+    k_v: float | None = None
 
     def __post_init__(self):
         if self.E <= 0:
@@ -163,6 +168,8 @@ class LinearElastic:
             raise ValueError(f"{self.name}: nu must lie in (-1, 0.5)")
         if self.gamma_sat is not None and self.gamma_sat < 0:
             raise ValueError(f"{self.name}: gamma_sat may not be negative")
+        if self.k <= 0 or (self.k_v is not None and self.k_v <= 0):
+            raise ValueError(f"{self.name}: permeabilities must be positive")
 
     @property
     def saturated_weight(self) -> float:
