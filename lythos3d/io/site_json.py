@@ -267,8 +267,12 @@ def site_to_dict(site: Site) -> dict:
 
 
 def load_site(path: str | os.PathLike) -> Site:
+    """A site from its JSON file; plan outlines may come from DXF drawings (see :mod:`lythos3d.io.dxf`)."""
+    from .dxf import resolve
+
     with open(path, encoding="utf-8") as fh:
-        return site_from_dict(json.load(fh))
+        d = json.load(fh)
+    return site_from_dict(resolve(d, os.path.dirname(os.path.abspath(path))))
 
 
 def save_site(site: Site, path: str | os.PathLike) -> str:

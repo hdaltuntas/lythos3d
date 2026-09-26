@@ -183,6 +183,26 @@ def _run(args) -> int:
     return 0 if all(s["converged"] for s in summary) else 1
 
 
+def _dxf(args) -> int:
+    from .io.dxf import read_plan
+
+    plan = read_plan(args.drawing)
+    if not plan.polylines and not plan.points:
+        print("no polylines, lines or points found")
+        return 1
+    for layer in plan.layers:
+        lines = plan.on(layer)
+        pts = [p for name, p in plan.points if name == layer]
+        print(f"{layer}: {len(lines)} polyline(s), {len(pts)} point(s)")
+        for k, line in enumerate(lines):
+            xs = [p[0] for p in line.points]
+            ys = [p[1] for p in line.points]
+            print(f"  [{k}] {'closed' if line.closed else 'open'}, {len(line.points)} points, "
+                  f"x {min(xs):g} to {max(xs):g}, y {min(ys):g} to {max(ys):g}")
+    print('refer to one in a site file as {"dxf": "<file>", "layer": "<layer>", "index": k}')
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="lythos3d", description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -220,6 +240,10 @@ def main(argv=None) -> int:
     p.add_argument("site", help="site description (.json)")
     p.add_argument("-o", "--out", help="write the mesh as .vtu, with soils, lifts and element quality")
     p.set_defaults(func=_mesh)
+
+    p = sub.add_parser("dxf", help="list the layers and polylines of a DXF plan")
+    p.add_argument("drawing", help="an ASCII .dxf file")
+    p.set_defaults(func=_dxf)
 
     p = sub.add_parser("run", help="analyse a site description stage by stage")
     p.add_argument("site", help="site description (.json)")

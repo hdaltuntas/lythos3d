@@ -28,6 +28,9 @@ whose failure is bounded at its ends. Lythos 3D is for those.
   grades away from the millimetre-long edges that a dipping layer leaves
   where it grazes a pit corner.
 - **Site files**: the whole model as JSON, analysed with `lythos3d run`.
+  Any pit, wall, fill or load outline may come from a DXF plan by layer
+  (`{"dxf": "plan.dxf", "layer": "PIT"}`); `lythos3d dxf plan.dxf` lists what a
+  drawing holds.
 - **Layered ground in a box**: a structured mesh without gmsh, for quick
   models and verification.
 - **Loads**: self weight, uniform tractions on any part of a boundary
@@ -324,8 +327,7 @@ which it sums. So a repeated run can land one bracket lower.
    ~~Constructing volumes (fill), consolidation in time.~~
 3. ~~**Geometry**: soil layers from boreholes, excavations drawn in plan,
    meshed by gmsh, site files.~~
-   ~~Ground loads on an irregular surface.~~
-   Still to come here: DXF plan import.
+   ~~Ground loads on an irregular surface, DXF plan import.~~
 4. **Structures**: ~~plates for walls and rafts, anchors and struts, walls
    drawn in plan for gmsh sites~~.
    ~~Soil–wall interfaces, embedded piles~~.
